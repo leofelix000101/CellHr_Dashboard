@@ -44,9 +44,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Database Connection ---
-def get_db_conn():
-    return psycopg2.connect(host="localhost", database="telecom_network_db", user="postgres", password="789456", port="5432")
-
+#def get_db_conn():
+   # return psycopg2.connect(host="localhost", database="telecom_network_db", user="postgres", password="789456", port="5432")
+conn = st.connection("postgresql", type="sql") #1
 # --- Professional Secure Login Screen ---
 def check_password():
     if "authenticated" not in st.session_state:
@@ -131,18 +131,22 @@ if current_tab == "📂 Upload & Process":
         df = pd.read_csv(uploaded_file, skiprows=2) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file, skiprows=2)
         df.columns = df.columns.str.strip()
         
-        conn = get_db_conn()
-        master_df = pd.read_sql("SELECT * FROM site_master", conn)
-        conn.close()
+        #onn = get_db_conn()
+        #master_df = pd.read_sql("SELECT * FROM site_master", conn)
+        #conn.close()
+        master_df = conn.query("SELECT * FROM site_master", ttl=0) #2
         
         missing_sites = df[~df['Station standard code'].isin(master_df['site_id'])]['Station standard code'].unique()
         
         if len(missing_sites) > 0:
             st.error(f"⚠️ Not include in Site Master: {', '.join(map(str, missing_sites))}")
-            conn = get_db_conn()
-            cols_info = pd.read_sql("SELECT column_name FROM information_schema.columns WHERE table_name = 'site_master'", conn)
-            master_cols = [c for c in cols_info['column_name'] if c != 'site_id']
-            conn.close()
+            #conn = get_db_conn()
+            #cols_info = pd.read_sql("SELECT column_name FROM information_schema.columns WHERE table_name = 'site_master'", conn)
+            #master_cols = [c for c in cols_info['column_name'] if c != 'site_id']
+            #conn.close()
+
+            cols_info = conn.query("SELECT column_name FROM information_schema.columns WHERE table_name = 'site_master'", ttl=0)
+            master_cols = [c for c in cols_info['column_name'] if c != 'site_id'] #3
             
             new_site_df = pd.DataFrame(index=missing_sites, columns=master_cols)
             new_site_df.index.name = 'site_id'
@@ -150,23 +154,25 @@ if current_tab == "📂 Upload & Process":
             st.write("### 🛠️ Please insert New site information!")
             edited_new_sites = st.data_editor(new_site_df, use_container_width=True)
             
-            if st.button("🚀 Save All New Sites to Master"):
-                conn = get_db_conn(); cur = conn.cursor()
-                for site_id, row in edited_new_sites.iterrows():
-                    cols = ', '.join([f'"{c}"' for c in edited_new_sites.columns])
-                    vals = [site_id] + [None if pd.isna(x) else x for x in row.tolist()]
-                    placeholders = ', '.join(['%s'] * len(vals))
-                    cur.execute(f'INSERT INTO site_master ("site_id", {cols}) VALUES ({placeholders})', vals)
-                conn.commit(); cur.close(); conn.close()
-                st.success("✅ New data saved to site_master.")
-                st.rerun()
+            if st.button("🚀 Save All New Sites to Master"): #5
+                    with conn.session as s:
+                        for site_id, row in edited_new_sites.iterrows():
+                            cols = ', '.join([f'"{c}"' for c in edited_new_sites.columns])
+                            vals = tuple([site_id] + [None if pd.isna(x) else x for x in row.tolist()])
+                            placeholders = ', '.join(['%s'] * len(vals))
+                            s.execute(f'INSERT INTO site_master ("site_id", {cols}) VALUES ({placeholders})', vals)
+                        s.commit()
+                    st.success("✅ New data saved to site_master.")
+                    st.rerun()
+        else: #5
 
-        else:
             df = df.merge(master_df, left_on='Station standard code', right_on='site_id', how='left')
             
-            conn = get_db_conn()
-            history_df = pd.read_sql("SELECT reason_level_1, reason_level_3 FROM total_cell_down", conn)
-            conn.close()
+            #conn = get_db_conn()
+            #history_df = pd.read_sql("SELECT reason_level_1, reason_level_3 FROM total_cell_down", conn)
+            #conn.close()
+            history_df = conn.query("SELECT reason_level_1, reason_level_3 FROM total_cell_down", ttl=0) #4
+
             history_df['reason_level_1'] = history_df['reason_level_1'].astype(str).str.replace('nan', '', case=False).str.lower().str.strip()
             history_df = history_df[history_df['reason_level_3'].notna()]
             reason_map = history_df.groupby('reason_level_1')['reason_level_3'].agg(lambda x: x.mode()[0] if not x.mode().empty else 'Unknown').to_dict()
@@ -261,39 +267,46 @@ if current_tab == "📂 Upload & Process":
                 st.subheader("📋 Reason Summary")
                 st.dataframe(edited_df.groupby('reason_level_3', as_index=False)['final_cell_hr'].sum(), use_container_width=True)
                 
+                #6
                 if st.button("🚀 Save to Database", key="save_db_btn"):
-                    conn = get_db_conn(); cur = conn.cursor()
                     try:
                         insert_query = """
                             INSERT INTO total_cell_down (
                                 site_id, alarm_name, start_time, end_time, duration_all_time, 
                                 reason_level_3, final_cell_hr, reason_level_1, g4_cell_hour, g2_cell_hour
                             ) 
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT ON CONSTRAINT unique_cell_down_record_v3 DO NOTHING;
+                            VALUES (:site_id, :alarm_name, :start_time, :end_time, :duration_all_time, 
+                                    :reason_level_3, :final_cell_hr, :reason_level_1, :g4_cell_hour, :g2_cell_hour)
+                            ON CONFLICT DO NOTHING;
                         """
-                        
                         inserted_rows = 0
-                        for _, row in edited_df.iterrows():
-                            cur.execute(insert_query, (
-                                row['Station standard code'], row['Alarm name'], row['Start time'], row['End time'], 
-                                row['Duration time (hour)'], row['reason_level_3'], row['final_cell_hr'], 
-                                row['Reason'], row['4G_cell_hour'], row['2G_cell_hour']
-                            ))
-                            if cur.rowcount > 0:
-                                inserted_rows += 1
-                                
-                        conn.commit()
+                        with conn.session as s:
+                            for _, row in edited_df.iterrows():
+                                # Using parameter dictionaries for st.connection session execution safely
+                                data_dict = {
+                                    "site_id": row['Station standard code'],
+                                    "alarm_name": row['Alarm name'],
+                                    "start_time": row['Start time'],
+                                    "end_time": row['End time'],
+                                    "duration_all_time": row['Duration time (hour)'],
+                                    "reason_level_3": row['reason_level_3'],
+                                    "final_cell_hr": row['final_cell_hr'],
+                                    "reason_level_1": row['Reason'],
+                                    "g4_cell_hour": row['4G_cell_hour'],
+                                    "g2_cell_hour": row['2G_cell_hour']
+                                }
+                                cursor = s.execute(insert_query, data_dict)
+                                if cursor.rowcount > 0:
+                                    inserted_rows += 1
+                            s.commit()
+                            
                         if inserted_rows > 0:
                             st.success(f"✅ Successfully saved {inserted_rows} new records!")
                         else:
                             st.info("ℹ️ No new records found. All rows already exist.")
                             
                     except Exception as e: 
-                        conn.rollback()
                         st.error(f"Error: {e}")
-                    finally: 
-                        cur.close(); conn.close()
 
 elif current_tab == "📈 Analytics & Trends":
     st.markdown("<h1>📈 Monthly Performance Analytics & Trends</h1>", unsafe_allow_html=True)
@@ -304,16 +317,17 @@ elif current_tab == "📈 Analytics & Trends":
     now = datetime.now()
     start_cycle = datetime(now.year, now.month, 21) if now.day >= 21 else (datetime(now.year, now.month, 1) - timedelta(days=1)).replace(day=21)
     
-    conn = get_db_conn()
+    # 7
     query = """
         SELECT t.*, m.owner, EXTRACT(DAY FROM end_time) as d, EXTRACT(MONTH FROM end_time) as m, EXTRACT(YEAR FROM end_time) as y 
         FROM total_cell_down t
         LEFT JOIN site_master m ON t.site_id = m.site_id
     """
-    df = pd.read_sql(query, conn)
-    conn.close()
+    df = conn.query(query, ttl=0)
 
     if not df.empty:
+        # --- FIX: Force numeric conversion immediately after loading from Supabase ---
+        df['final_cell_hr'] = pd.to_numeric(df['final_cell_hr'], errors='coerce').fillna(0.0)
         df['d'] = df['d'].astype(int)
         
         # --- Correct Cycle Name Logic ---
@@ -380,7 +394,6 @@ elif current_tab == "📈 Analytics & Trends":
             st.plotly_chart(fig, use_container_width=True)
 
         # --- Current / Selected Cycle Summary ---
-        # --- Current / Selected Cycle Summary ---
         st.write(f"### 📅 Cycle Performance Summary (21st - 20th)")
         
         def get_cycle_name(row):
@@ -416,23 +429,24 @@ elif current_tab == "📈 Analytics & Trends":
                     if pd.notna(d_obj):
                         date_mapping[p_day] = d_obj.strftime('%b-%d')
 
+                curr_df['final_cell_hr'] = pd.to_numeric(curr_df['final_cell_hr'], errors='coerce').fillna(0.0)
                 pivot_df = curr_df.pivot_table(index='reason_level_3', columns='plot_day', values='final_cell_hr', aggfunc='sum', fill_value=0)
                 pivot_df = pivot_df.reindex(sorted(pivot_df.columns), axis=1)
                 pivot_df = pivot_df.rename(columns=date_mapping)
                 
                 pivot_df['Total Cell Hour'] = pivot_df.sum(axis=1)
-                # Dynamically calculate days_passed based on unique active dates present in the filtered cycle data
                 days_passed = curr_df['dt_obj'].nunique()
-                # Fallback to 1 to avoid ZeroDivisionError if no days are found
                 days_passed = max(days_passed, 1)
                 pivot_df['Daily Avg Cell hour'] = pivot_df['Total Cell Hour'] / days_passed
-                pivot_df['Daily Avg (%)'] = (pivot_df['Daily Avg Cell hour'] / pivot_df['Daily Avg Cell hour'].sum()) * 100
+                
+                total_sum = pivot_df['Daily Avg Cell hour'].sum()
+                pivot_df['Daily Avg (%)'] = (pivot_df['Daily Avg Cell hour'] / total_sum) * 100 if total_sum > 0 else 0
                 
                 pivot_df = pivot_df.reset_index().rename(columns={'reason_level_3': 'Reason'})
 
                 m1, m2 = st.columns(2)
-                m1.metric("Total Cell Hour", f"{pivot_df['Total Cell Hour'].sum():,.2f}")
-                m2.metric("Daily Avg Cell hour", f"{pivot_df['Daily Avg Cell hour'].sum():,.2f}")
+                m1.metric("Total Cell Hour", f"{float(pivot_df['Total Cell Hour'].sum()):,.2f}")
+                m2.metric("Daily Avg Cell hour", f"{float(pivot_df['Daily Avg Cell hour'].sum()):,.2f}")
                 
                 summary_fixed_cols = ['Reason', 'Total Cell Hour', 'Daily Avg Cell hour', 'Daily Avg (%)']
                 date_cols = [c for c in pivot_df.columns if c not in summary_fixed_cols]
@@ -447,10 +461,8 @@ elif current_tab == "📈 Analytics & Trends":
                 for d_col in date_cols:
                     column_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small")
 
-                # --- Clear Font & Centralized Alignment Styling ---
                 st.markdown("""
                 <style>
-                    /* Force strict centering and crisp clear typography across dataframe components */
                     div[data-testid="stDataFrame"] div, div[data-testid="stDataEditor"] div {
                         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif !important;
                     }
@@ -474,41 +486,31 @@ elif current_tab == "📈 Analytics & Trends":
         else:
             st.warning("⚠️ Please select at least one cycle period.")
 
-
         # --- Date-Selectable Daily Summary ---
-        # --- Date-Selectable Daily Summary with Integrated Error Alarms ---
-        # --- Executive Daily Summary & Error Alarms ---
-        # --- Executive Daily Summary & Error Alarms ---
-        # --- Executive Daily Summary & Error Alarms ---
-        # --- Executive Daily Summary & Error Alarms ---
         st.write("### 📅 Daily Performance & Executive Summary")
         
-        # Determine available dates in the dataset to set bounds, defaulting to current date if present
         max_available_date = pd.to_datetime(df['end_time']).dt.date.max()
         default_date = datetime.now().date()
         if pd.isna(max_available_date) or default_date > max_available_date:
             default_date = max_available_date if pd.notna(max_available_date) else datetime.now().date()
 
-        # Date picker control for day-by-day inspection
         selected_summary_date = st.date_input(
             "Select Operational Date:", 
             value=default_date,
             key="daily_summary_date_picker"
         )
 
-        # Filter dataset for the chosen date
         target_date_df = df[pd.to_datetime(df['end_time']).dt.date == selected_summary_date].copy()
         
-        # Fetch live error datasets for contextual executive alarm tracking
         try:
-            err_conn = get_db_conn()
             err_query = """
                 SELECT t.site_id, t.reason_level_1, t.reason_level_3, t.final_cell_hr, t.end_time, m.owner, m.power_type 
                 FROM total_cell_down t
                 LEFT JOIN site_master m ON t.site_id = m.site_id
             """
-            full_err_df = pd.read_sql(err_query, err_conn)
-            err_conn.close()
+            full_err_df = conn.query(err_query, ttl=0)
+            if not full_err_df.empty:
+                full_err_df['final_cell_hr'] = pd.to_numeric(full_err_df['final_cell_hr'], errors='coerce').fillna(0.0)
         except Exception:
             full_err_df = pd.DataFrame()
 
@@ -536,19 +538,18 @@ elif current_tab == "📈 Analytics & Trends":
 
         st.divider()
 
-        # --- Balanced 50/50 Layout for Clean Reporting & Screenshotting ---
         col_table, col_alarms = st.columns(2)
 
         with col_table:
             st.markdown(f"#### Daily Analysis ({selected_summary_date.strftime('%d %b %Y')})")
             
             day_total_hr = target_date_df['final_cell_hr'].sum() if not target_date_df.empty else 0.0
-            st.metric("Total Cell Hour", f"{day_total_hr:,.2f}")
+            st.metric("Total Cell Hour", f"{float(day_total_hr):,.2f}")
 
             if not target_date_df.empty:
                 df_target_day = target_date_df.groupby('reason_level_3')['final_cell_hr'].sum().reset_index()
                 day_total = df_target_day['final_cell_hr'].sum()
-                df_target_day['Daily Percent (%)'] = (df_target_day['final_cell_hr'] / day_total) * 100
+                df_target_day['Daily Percent (%)'] = (df_target_day['final_cell_hr'] / day_total) * 100 if day_total > 0 else 0
                 df_target_day.columns = ['Reason', 'Cell Hour', 'Daily Percent (%)']
                 df_target_day = df_target_day[['Reason', 'Cell Hour', 'Daily Percent (%)']]
 
@@ -572,7 +573,6 @@ elif current_tab == "📈 Analytics & Trends":
             
             st.metric("Total Exception Count", len(target_noc_df) + len(target_oce_df))
 
-            # Combine exceptions and include power_type alongside site_id, error type, and reason
             combined_exceptions = []
             for _, r in target_noc_df.iterrows():
                 combined_exceptions.append({
@@ -605,6 +605,7 @@ elif current_tab == "📈 Analytics & Trends":
                 )
             else:
                 st.success("Operational Status: All sites Correct! (0 Exceptions).")
+#================================================================================================
 
 elif current_tab == "🔬 Site Daily Down Tracking":
     st.markdown("<h1>🔬 Operational Site Daily Breakdown</h1>", unsafe_allow_html=True)
@@ -619,7 +620,6 @@ elif current_tab == "🔬 Site Daily Down Tracking":
             return dt.strftime("%B %Y")
 
     # 2. Fetch all required data
-    conn = get_db_conn()
     tracking_query = """
         SELECT 
             t.end_time, 
@@ -631,15 +631,17 @@ elif current_tab == "🔬 Site Daily Down Tracking":
         FROM total_cell_down t 
         LEFT JOIN site_master m ON t.site_id = m.site_id
     """
-    tracking_data_all = pd.read_sql(tracking_query, conn)
-    conn.close()
+    tracking_data_all = conn.query(tracking_query, ttl=0)
 
     if not tracking_data_all.empty:
+        # --- FIX: Force numeric conversion immediately after loading from Supabase ---
+        tracking_data_all['final_cell_hr'] = pd.to_numeric(tracking_data_all['final_cell_hr'], errors='coerce').fillna(0.0)
+        
         tracking_data_all['end_time'] = pd.to_datetime(tracking_data_all['end_time'])
         tracking_data_all['Cycle'] = tracking_data_all['end_time'].apply(get_cycle_name)
         tracking_data_all['owner'] = tracking_data_all['owner'].fillna('Unknown Owner').astype(str).str.strip()
         
-        #=======================================================================
+        # =======================================================================
         # 1. Define cycle selection (ensure this happens before the loop)
         sorted_cycles = sorted(tracking_data_all['Cycle'].unique(), reverse=True)
         selected_cycle_name = st.selectbox("🗓️ Select Cycle:", sorted_cycles)
@@ -648,14 +650,10 @@ elif current_tab == "🔬 Site Daily Down Tracking":
         selected_dt = pd.to_datetime(selected_cycle_name)
 
         # Define the 21st-to-20th cycle boundaries
-        # Start is the 21st of the previous month
         start_cycle = (selected_dt - pd.DateOffset(months=1)).replace(day=21)
-        # End is the 20th of the current month
         end_cycle = selected_dt.replace(day=20, hour=23, minute=59, second=59)
 
         # Calculate days passed
-        # If the current date is past the end_cycle, use the full cycle duration
-        # Otherwise, use the time elapsed since the start_cycle
         today = datetime.now()
         if today > end_cycle:
             days_passed = (end_cycle - start_cycle).days + 1
@@ -665,8 +663,7 @@ elif current_tab == "🔬 Site Daily Down Tracking":
         # Now filter your data
         tracking_data = tracking_data_all[tracking_data_all['Cycle'] == selected_cycle_name].copy()
 
-
-        #====================================================
+        # ====================================================
         tracking_data['Date_Str'] = tracking_data['end_time'].dt.strftime('%d-%b')
         unique_dates_sorted = tracking_data.sort_values(by='end_time')['Date_Str'].unique()
         all_reasons = sorted(tracking_data['reason_level_3'].dropna().unique())
@@ -680,15 +677,11 @@ elif current_tab == "🔬 Site Daily Down Tracking":
                     "Times down": st.column_config.NumberColumn("Times down", format="%d", width="small", pinned=True),
                     "Avg": st.column_config.NumberColumn("Avg", format="%.1f", width="small", pinned=True),
                     "Total": st.column_config.NumberColumn("Total", format="%.1f", width="small", pinned=True),
-                    # Removed alignment="center" from ProgressColumn below:
                     "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100, width="auto", pinned=True),
             }
     
-              
             for d_col in unique_dates:
-                    col_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small", alignment="center")
-                
-      
+                col_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small", alignment="center")
     
             st.data_editor(
                 df, 
@@ -699,10 +692,6 @@ elif current_tab == "🔬 Site Daily Down Tracking":
                 column_config=col_config
             )
 
-                
-
-        #--------------------------#
-    
         # 5. Display breakdown by reason
         for reason in all_reasons:
             reason_filtered_df = tracking_data[tracking_data['reason_level_3'] == reason].copy()
@@ -749,7 +738,7 @@ elif current_tab == "🔬 Site Daily Down Tracking":
                                     max_value=100
                                 ),
                         },
-                        use_container_width= True, hide_index=True
+                        use_container_width=True, hide_index=True
                     )
                     
                     unique_owners = sorted(reason_filtered_df['owner'].unique())
@@ -764,13 +753,11 @@ elif current_tab == "🔬 Site Daily Down Tracking":
                         
                         site_pivot['Total'] = site_pivot[unique_dates_sorted].sum(axis=1)
                         site_pivot['Times down'] = (site_pivot[unique_dates_sorted] > 0).sum(axis=1)
-                        # Standardized column name to 'Avg' for the helper function
                         site_pivot['Avg'] = site_pivot['Total'] / days_passed 
-                        site_pivot['%'] = (site_pivot['Total'] / owner_total) * 100
+                        site_pivot['%'] = (site_pivot['Total'] / owner_total) * 100 if owner_total > 0 else 0
                         
                         site_pivot_clean = site_pivot.reset_index().sort_values(by='Total', ascending=False)
                         
-                        # Use the helper function to display with frozen columns
                         display_pinned_table(site_pivot_clean, unique_dates_sorted)
                 
                 # --- HANDLING FOR OTHER CATEGORIES ---
@@ -782,14 +769,13 @@ elif current_tab == "🔬 Site Daily Down Tracking":
                         aggfunc='sum',
                         fill_value=0.0
                     )
+                    
                     site_pivot = site_pivot.reindex(columns=unique_dates_sorted, fill_value=0.0)
                     
                     site_pivot['Times down'] = (site_pivot[unique_dates_sorted] > 0).sum(axis=1).astype(int)
                     site_pivot['Total'] = site_pivot[unique_dates_sorted].sum(axis=1).astype(float)
-                    # Standardized column name to 'Avg' for the helper function
                     site_pivot['Avg'] = site_pivot[unique_dates_sorted].mean(axis=1).astype(float)
-                    # Added calculation for % to match the layout
-                    site_pivot['%'] = (site_pivot['Total'] / reason_total_hours) * 100
+                    site_pivot['%'] = (site_pivot['Total'] / reason_total_hours) * 100 if reason_total_hours > 0 else 0
                     
                     site_pivot_clean = site_pivot.reset_index()
                     site_pivot_clean = site_pivot_clean[site_pivot_clean['Times down'] > 0]
@@ -806,11 +792,10 @@ elif current_tab == "🔬 Site Daily Down Tracking":
                     site_pivot_clean = site_pivot_clean.sort_values(by='Total', ascending=False)
                     
                     if not site_pivot_clean.empty:
-                        # Use the helper function to display with frozen columns
                         display_pinned_table(site_pivot_clean, unique_dates_sorted)
     else:
         st.info("ℹ️ No records found.")
-
+#=================================================================================================
 elif current_tab == "📥 Export Data":
     st.markdown("<h1>📥 Operational Report Data Extraction</h1>", unsafe_allow_html=True)
     st.divider()
@@ -818,17 +803,15 @@ elif current_tab == "📥 Export Data":
     
     col_d1, col_d2, col_r = st.columns(3)
     with col_d1:
-        start_date = st.date_input("🗓️ Start Date", value=datetime.now().date() - timedelta(days=30))
+        start_date = st.date_input("🗓️ Start Date", value=datetime.now().date() - timedelta(days=30), key="export_start_date")
     with col_d2:
-        end_date = st.date_input("🗓️ End Date", value=datetime.now().date())
+        end_date = st.date_input("🗓️ End Date", value=datetime.now().date(), key="export_end_date")
     with col_r:
-        conn = get_db_conn()
-        available_reasons = ["All Reasons"] + list(pd.read_sql("SELECT DISTINCT reason_level_3 FROM total_cell_down WHERE reason_level_3 IS NOT NULL", conn)['reason_level_3'].unique())
-        conn.close()
-        selected_reason = st.selectbox("🔬 Select Reason Level 3", options=available_reasons)
+        reasons_df = conn.query("SELECT DISTINCT reason_level_3 FROM total_cell_down WHERE reason_level_3 IS NOT NULL", ttl=0)
+        available_reasons = ["All Reasons"] + list(reasons_df['reason_level_3'].unique()) if not reasons_df.empty else ["All Reasons"]
+        selected_reason = st.selectbox("🔬 Select Reason Level 3", options=available_reasons, key="export_reason_select")
         
-    if st.button("🔍 Generate Excel Report"):
-        conn = get_db_conn()
+    if st.button("🔍 Generate Excel Report", key="generate_excel_btn"):
         if selected_reason == "All Reasons":
             export_query = """
                 SELECT 
@@ -840,10 +823,10 @@ elif current_tab == "📥 Export Data":
                     reason_level_3 AS "Reason Level 3",
                     final_cell_hr AS "Total Cell Hour"
                 FROM total_cell_down
-                WHERE end_time::date >= %s AND end_time::date <= %s
+                WHERE end_time::date >= :start_date AND end_time::date <= :end_date
                 ORDER BY end_time DESC
             """
-            export_df = pd.read_sql(export_query, conn, params=(start_date, end_date))
+            export_df = conn.query(export_query, params={"start_date": start_date, "end_date": end_date}, ttl=0)
         else:
             export_query = """
                 SELECT 
@@ -855,14 +838,15 @@ elif current_tab == "📥 Export Data":
                     reason_level_3 AS "Reason Level 3",
                     final_cell_hr AS "Total Cell Hour"
                 FROM total_cell_down
-                WHERE end_time::date >= %s AND end_time::date <= %s AND reason_level_3 = %s
+                WHERE end_time::date >= :start_date AND end_time::date <= :end_date AND reason_level_3 = :reason
                 ORDER BY end_time DESC
             """
-            export_df = pd.read_sql(export_query, conn, params=(start_date, end_date, selected_reason))
-            
-        conn.close()
+            export_df = conn.query(export_query, params={"start_date": start_date, "end_date": end_date, "reason": selected_reason}, ttl=0)
         
         if not export_df.empty:
+            # --- FIX: Force numeric conversion for Total Cell Hour immediately after query ---
+            export_df["Total Cell Hour"] = pd.to_numeric(export_df["Total Cell Hour"], errors='coerce').fillna(0.0)
+            
             st.success(f"📊 Found {len(export_df)} operational logs matching your criteria.")
             st.dataframe(export_df, use_container_width=True)
             
@@ -872,32 +856,36 @@ elif current_tab == "📥 Export Data":
             processed_data = output.getvalue()
             
             file_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            sanitized_reason = selected_reason.replace(" ", "_").lower()
+            sanitized_reason = str(selected_reason).replace(" ", "_").lower()
             filename = f"network_down_report_{sanitized_reason}_{file_ts}.xlsx"
             
             st.download_button(
                 label="📥 Download Excel Report",
                 data=processed_data,
                 file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_excel_report_btn"
             )
         else:
             st.warning("⚠️ No operational records found for the chosen date range and criteria.")
 
+#=================================================================================================
 elif current_tab == "⚠️ Error Checking":
     st.markdown("<h1>⚠️ Data Integrity & Error Checking</h1>", unsafe_allow_html=True)
     st.divider()
 
-    conn = get_db_conn()
+    #10
     query = """
         SELECT t.site_id, t.reason_level_1, t.reason_level_3, t.final_cell_hr, m.owner, m.power_type 
         FROM total_cell_down t
         LEFT JOIN site_master m ON t.site_id = m.site_id
     """
-    df = pd.read_sql(query, conn)
-    conn.close()
+    df = conn.query(query, ttl=0)
 
     if not df.empty:
+        # --- FIX: Force numeric conversion immediately after loading from Supabase ---
+        df['final_cell_hr'] = pd.to_numeric(df['final_cell_hr'], errors='coerce').fillna(0.0)
+        
         st.subheader("📋 Configuration Review")
 
         # --- 1. Owner NOT MyTel (Self Power) ---
@@ -911,7 +899,7 @@ elif current_tab == "⚠️ Error Checking":
         owner_counts_nm = not_mytel_df.groupby('owner')['site_id'].nunique()
 
         # Create enough columns to fit the number of owners + 1 (for total)
-        cols = st.columns(len(owner_counts_nm) + 1)
+        cols = st.columns(len(owner_counts_nm) + 1) if not owner_counts_nm.empty else st.columns(1)
         
         # Shorten the label to avoid truncation
         cols[0].metric("All Sites", total_not_mytel) 
@@ -960,7 +948,6 @@ elif current_tab == "⚠️ Error Checking":
                 
             # 2. OCE Error Logic
             # Power must be 'Self Power' AND (reason_level_3 contains 'tco' OR 'tower' OR is blank)
-            # Note: 'tower' will catch 'towerco' as well
             is_r3_invalid = not row.get('reason_level_3') or str(row.get('reason_level_3')).strip() == ""
             
             if power == 'Self Power' and ('tco' in r3 or 'tower' in r3 or is_r3_invalid):
@@ -994,15 +981,15 @@ elif current_tab == "⚠️ Error Checking":
             st.success("No OCE errors found.")
     else:
         st.info("No data available.")
+#=================================================================================================
 
 elif current_tab == "🏆 Team Performance":
     st.markdown("<h1>🏆 Team Performance Dashboard</h1>", unsafe_allow_html=True)
+    st.divider()
     
-    conn = get_db_conn()
-    # Fetch correctly using 'fot_teams'
-    master_df = pd.read_sql("SELECT site_id, fot_teams FROM site_master", conn)
-    down_df = pd.read_sql("SELECT final_cell_hr, end_time, site_id FROM total_cell_down", conn)
-    conn.close()
+    #11
+    master_df = conn.query("SELECT site_id, fot_teams FROM site_master", ttl=0)
+    down_df = conn.query("SELECT final_cell_hr, end_time, site_id FROM total_cell_down", ttl=0)
 
     if not master_df.empty:
         # 1. Prepare static team sites (using full master list)
@@ -1011,11 +998,17 @@ elif current_tab == "🏆 Team Performance":
         static_team_sites.columns = ['fot_teams', 'Total_Sites']
 
         # 2. Prepare Downtime Data
-        down_df['end_time'] = pd.to_datetime(down_df['end_time'])
-        down_df['cycle'] = down_df['end_time'].apply(lambda x: (x + pd.DateOffset(months=1)).strftime("%B %Y") if x.day >= 21 else x.strftime("%B %Y"))
-        
-        all_cycles = sorted(down_df['cycle'].unique(), reverse=True)
-        selected_cycles = st.multiselect("🗓️ Select Cycle Periods:", options=all_cycles, default=all_cycles[0] if all_cycles else None)
+        if not down_df.empty:
+            # --- FIX: Force numeric conversion immediately after loading from Supabase ---
+            down_df['final_cell_hr'] = pd.to_numeric(down_df['final_cell_hr'], errors='coerce').fillna(0.0)
+            
+            down_df['end_time'] = pd.to_datetime(down_df['end_time'])
+            down_df['cycle'] = down_df['end_time'].apply(lambda x: (x + pd.DateOffset(months=1)).strftime("%B %Y") if x.day >= 21 else x.strftime("%B %Y"))
+        else:
+            down_df['cycle'] = []
+
+        all_cycles = sorted(down_df['cycle'].unique(), reverse=True) if not down_df.empty else []
+        selected_cycles = st.multiselect("🗓️ Select Cycle Periods:", options=all_cycles, default=all_cycles[0] if all_cycles else None, key="team_perf_cycles")
         
         if selected_cycles:
             # Filter and add 'fot_teams' to downtime data via merge
@@ -1034,25 +1027,28 @@ elif current_tab == "🏆 Team Performance":
             team_perf = team_perf.sort_values('Cell_Hr_Per_Site', ascending=True)
             team_perf['Rank'] = range(1, len(team_perf) + 1)
             
+            max_cell_hr_per_site = float(team_perf['Cell_Hr_Per_Site'].max()) if not team_perf.empty and team_perf['Cell_Hr_Per_Site'].max() > 0 else 1.0
+
             # Display Table
             st.dataframe(
                 team_perf[['fot_teams', 'Total_Sites', 'Total_Cell_Hr', 'Cell_Hr_Per_Site', 'Rank']],
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "fot_teams": st.column_config.TextColumn("Team Name",alignment='center',width='auto'),
-                    "Total_Sites": st.column_config.NumberColumn("Total Sites", format="%d",alignment='center',width='auto'),
-                    "Total_Cell_Hr": st.column_config.NumberColumn("Total Cell Hr", format="%.1f",alignment='center',width='auto'),
+                    "fot_teams": st.column_config.TextColumn("Team Name", alignment='center', width='auto'),
+                    "Total_Sites": st.column_config.NumberColumn("Total Sites", format="%d", alignment='center', width='auto'),
+                    "Total_Cell_Hr": st.column_config.NumberColumn("Total Cell Hr", format="%.1f", alignment='center', width='auto'),
                     "Cell_Hr_Per_Site": st.column_config.ProgressColumn(
                         "Performance Index (Cell Hr / Site)",
                         format="%.2f",
                         min_value=0,
-                        max_value=float(team_perf['Cell_Hr_Per_Site'].max()) if team_perf['Cell_Hr_Per_Site'].max() > 0 else 1
+                        max_value=max_cell_hr_per_site,
+                        width='large'
                     ),
-                    "Rank": st.column_config.NumberColumn("Rank", format="%d",alignment='center',width='auto')
+                    "Rank": st.column_config.NumberColumn("Rank", format="%d", alignment='center', width='auto')
                 }
             )
         else:
-            st.warning("Please select at least one cycle.")
+            st.warning("⚠️ Please select at least one cycle.")
     else:
-        st.info("No data available in master database.")
+        st.info("ℹ️ No data available in master database.")
