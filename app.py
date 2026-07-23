@@ -796,6 +796,9 @@ elif current_tab == "🔬 Site Daily Down Tracking":
     else:
         st.info("ℹ️ No records found.")
 #=================================================================================================
+# ==========================================
+# TAB 3: EXPORT DATA
+# ==========================================
 elif current_tab == "📥 Export Data":
     st.markdown("<h1>📥 Operational Report Data Extraction</h1>", unsafe_allow_html=True)
     st.divider()
@@ -814,39 +817,29 @@ elif current_tab == "📥 Export Data":
     if st.button("🔍 Generate Excel Report", key="generate_excel_btn"):
         if selected_reason == "All Reasons":
             export_query = """
-                SELECT 
-                    site_id AS "Site Code",
-                    alarm_name AS "Alarm Name/Cell ID",
-                    start_time AS "Start Time",
-                    end_time AS "End Time",
-                    reason_level_1 AS "Reason Level 1",
-                    reason_level_3 AS "Reason Level 3",
-                    final_cell_hr AS "Total Cell Hour"
-                FROM total_cell_down
-                WHERE end_time::date >= :start_date AND end_time::date <= :end_date
-                ORDER BY end_time DESC
+                SELECT site_id AS "Site Code", alarm_name AS "Alarm Name/Cell ID", start_time AS "Start Time", end_time AS "End Time", 
+                       reason_level_1 AS "Reason Level 1", reason_level_3 AS "Reason Level 3", final_cell_hr AS "Total Cell Hour"
+                FROM total_cell_down WHERE end_time::date >= :start_date AND end_time::date <= :end_date ORDER BY end_time DESC
             """
             export_df = conn.query(export_query, params={"start_date": start_date, "end_date": end_date}, ttl=0)
         else:
             export_query = """
-                SELECT 
-                    site_id AS "Site Code",
-                    alarm_name AS "Alarm Name/Cell ID",
-                    start_time AS "Start Time",
-                    end_time AS "End Time",
-                    reason_level_1 AS "Reason Level 1",
-                    reason_level_3 AS "Reason Level 3",
-                    final_cell_hr AS "Total Cell Hour"
-                FROM total_cell_down
-                WHERE end_time::date >= :start_date AND end_time::date <= :end_date AND reason_level_3 = :reason
-                ORDER BY end_time DESC
+                SELECT site_id AS "Site Code", alarm_name AS "Alarm Name/Cell ID", start_time AS "Start Time", end_time AS "End Time", 
+                       reason_level_1 AS "Reason Level 1", reason_level_3 AS "Reason Level 3", final_cell_hr AS "Total Cell Hour"
+                FROM total_cell_down WHERE end_time::date >= :start_date AND end_time::date <= :end_date AND reason_level_3 = :reason ORDER BY end_time DESC
             """
             export_df = conn.query(export_query, params={"start_date": start_date, "end_date": end_date, "reason": selected_reason}, ttl=0)
         
         if not export_df.empty:
-            # --- FIX: Force numeric conversion for Total Cell Hour immediately after query ---
+            # --- FIX: Clean data types to prevent Excel writing errors ---
             export_df["Total Cell Hour"] = pd.to_numeric(export_df["Total Cell Hour"], errors='coerce').fillna(0.0)
             
+            # Convert datetime columns to string format to prevent timezone/formatting crashes
+            if "Start Time" in export_df.columns:
+                export_df["Start Time"] = pd.to_datetime(export_df["Start Time"]).dt.strftime('%Y-%m-%d %H:%M:%S')
+            if "End Time" in export_df.columns:
+                export_df["End Time"] = pd.to_datetime(export_df["End Time"]).dt.strftime('%Y-%m-%d %H:%M:%S')
+
             st.success(f"📊 Found {len(export_df)} operational logs matching your criteria.")
             st.dataframe(export_df, use_container_width=True)
             
@@ -855,10 +848,7 @@ elif current_tab == "📥 Export Data":
                 export_df.to_excel(writer, sheet_name='Operational Report', index=False)
             processed_data = output.getvalue()
             
-            file_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            sanitized_reason = str(selected_reason).replace(" ", "_").lower()
-            filename = f"network_down_report_{sanitized_reason}_{file_ts}.xlsx"
-            
+            filename = f"network_down_report_{str(selected_reason).replace(' ', '_').lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
             st.download_button(
                 label="📥 Download Excel Report",
                 data=processed_data,
@@ -868,7 +858,6 @@ elif current_tab == "📥 Export Data":
             )
         else:
             st.warning("⚠️ No operational records found for the chosen date range and criteria.")
-
 #=================================================================================================
 elif current_tab == "⚠️ Error Checking":
     st.markdown("<h1>⚠️ Data Integrity & Error Checking</h1>", unsafe_allow_html=True)
