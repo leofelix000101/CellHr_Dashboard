@@ -271,44 +271,33 @@ if current_tab == "📂 Upload & Process":
                 #6
                 if st.button("🚀 Save to Database", key="save_db_btn"):
                     try:
-                        insert_query = """
-                            INSERT INTO total_cell_down (
-                                site_id, alarm_name, start_time, end_time, duration_all_time, 
-                                reason_level_3, final_cell_hr, reason_level_1, g4_cell_hour, g2_cell_hour
-                            ) 
-                            VALUES (:site_id, :alarm_name, :start_time, :end_time, :duration_all_time, 
-                                    :reason_level_3, :final_cell_hr, :reason_level_1, :g4_cell_hour, :g2_cell_hour)
-                            ON CONFLICT DO NOTHING;
-                        """
-                        inserted_rows = 0
-                        with conn.session as s:
-                            # --- FIX: Wrap your SQL statement string inside text(...) ---
-                            wrapped_insert_query = text(insert_query)
-                            
-                            for _, row in edited_df.iterrows():
-                                # Using parameter dictionaries for st.connection session execution safely
-                                data_dict = {
-                                    "site_id": row['Station standard code'],
-                                    "alarm_name": row['Alarm name'],
-                                    "start_time": row['Start time'],
-                                    "end_time": row['End time'],
-                                    "duration_all_time": row['Duration time (hour)'],
-                                    "reason_level_3": row['reason_level_3'],
-                                    "final_cell_hr": row['final_cell_hr'],
-                                    "reason_level_1": row['Reason'],
-                                    "g4_cell_hour": row['4G_cell_hour'],
-                                    "g2_cell_hour": row['2G_cell_hour']
-                                }
-                                cursor = s.execute(wrapped_insert_query, data_dict)
-                                if cursor.rowcount > 0:
-                                    inserted_rows += 1
-                            s.commit()
-                            
-                        if inserted_rows > 0:
-                            st.success(f"✅ Successfully saved {inserted_rows} new records!")
+                        # 1. Prepare all data dictionaries into a list
+                        data_list = []
+                        for _, row in edited_df.iterrows():
+                            data_list.append({
+                                "site_id": row['Station standard code'],
+                                "alarm_name": row['Alarm name'],
+                                "start_time": row['Start time'],
+                                "end_time": row['End time'],
+                                "duration_all_time": row['Duration time (hour)'],
+                                "reason_level_3": row['reason_level_3'],
+                                "final_cell_hr": row['final_cell_hr'],
+                                "reason_level_1": row['Reason'],
+                                "g4_cell_hour": row['4G_cell_hour'],
+                                "g2_cell_hour": row['2G_cell_hour']
+                            })
+
+                        if data_list:
+                            with conn.session as s:
+                                # 2. Wrap query and use executemany for bulk insertion
+                                wrapped_insert_query = text(insert_query)
+                                s.execute(wrapped_insert_query, data_list)
+                                s.commit()
+                                
+                            st.success(f"✅ Successfully saved {len(data_list)} records instantly!")
                         else:
-                            st.info("ℹ️ No new records found. All rows already exist.")
-                            
+                            st.info("ℹ️ No records found to save.")
+
                     except Exception as e: 
                         st.error(f"Error: {e}")
 
