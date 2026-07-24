@@ -282,6 +282,9 @@ if current_tab == "📂 Upload & Process":
                         """
                         inserted_rows = 0
                         with conn.session as s:
+                            # --- FIX: Wrap your SQL statement string inside text(...) ---
+                            wrapped_insert_query = text(insert_query)
+                            
                             for _, row in edited_df.iterrows():
                                 # Using parameter dictionaries for st.connection session execution safely
                                 data_dict = {
@@ -296,7 +299,7 @@ if current_tab == "📂 Upload & Process":
                                     "g4_cell_hour": row['4G_cell_hour'],
                                     "g2_cell_hour": row['2G_cell_hour']
                                 }
-                                cursor = s.execute(insert_query, data_dict)
+                                cursor = s.execute(wrapped_insert_query, data_dict)
                                 if cursor.rowcount > 0:
                                     inserted_rows += 1
                             s.commit()
