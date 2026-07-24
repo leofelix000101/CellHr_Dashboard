@@ -271,35 +271,43 @@ if current_tab == "📂 Upload & Process":
                 #6
                 if st.button("🚀 Save to Database", key="save_db_btn"):
                     try:
-                        # 1. Clean or rename your DataFrame columns to match your exact Supabase table column names
-                        df_to_save = edited_df.rename(columns={
-                            'Station standard code': 'site_id',
-                            'Alarm name': 'alarm_name',
-                            'Start time': 'start_time',
-                            'End time': 'end_time',
-                            'Duration time (hour) >': 'duration_all_time', # match your exact dataframe column names
-                            'reason_level_3': 'reason_level_3',
-                            'final_cell_hr': 'final_cell_hr',
-                            'Reason': 'reason_level_1',
-                            '4G_cell_hour': 'g4_cell_hour',
-                            '2G_cell_hour': 'g2_cell_hour'
-                        })
-                    
-                        # 2. Use pandas to write directly to the database in fast chunks
+                        insert_query = """
+                            INSERT INTO total_cell_down (
+                                site_id, alarm_name, start_time, end_time, duration_all_time, 
+                                reason_level_3, final_cell_hr, reason_level_1, g4_cell_hour, g2_cell_hour
+                            ) 
+                            VALUES (:site_id, :alarm_name, :start_time, :end_time, :duration_all_time, 
+                                    :reason_level_3, :final_cell_hr, :reason_level_1, :g4_cell_hour, :g2_cell_hour)
+                            ON CONFLICT DO NOTHING;
+                        """
+                        inserted_rows = 0
                         with conn.session as s:
-                            df_to_save.to_sql(
-                                'total_cell_down', 
-                                con=s.connection(), 
-                                if_exists='append', 
-                                index=False, 
-                                method='multi' # This does fast bulk inserts automatically
-                            )
+                            for _, row in edited_df.iterrows():
+                                # Using parameter dictionaries for st.connection session execution safely
+                                data_dict = {
+                                    "site_id": row['Station standard code'],
+                                    "alarm_name": row['Alarm name'],
+                                    "start_time": row['Start time'],
+                                    "end_time": row['End time'],
+                                    "duration_all_time": row['Duration time (hour)'],
+                                    "reason_level_3": row['reason_level_3'],
+                                    "final_cell_hr": row['final_cell_hr'],
+                                    "reason_level_1": row['Reason'],
+                                    "g4_cell_hour": row['4G_cell_hour'],
+                                    "g2_cell_hour": row['2G_cell_hour']
+                                }
+                                cursor = s.execute(insert_query, data_dict)
+                                if cursor.rowcount > 0:
+                                    inserted_rows += 1
                             s.commit()
-                    
-                        st.success(f"✅ Successfully saved {len(df_to_save)} records instantly!")
-                    
-                    except Exception as e:
-                        st.error(f"❌ Save failed with error: {e}")
+                            
+                        if inserted_rows > 0:
+                            st.success(f"✅ Successfully saved {inserted_rows} new records!")
+                        else:
+                            st.info("ℹ️ No new records found. All rows already exist.")
+                            
+                    except Exception as e: 
+                        st.error(f"Error: {e}")
 
 elif current_tab == "📈 Analytics & Trends":
     st.markdown("<h1>📈 Monthly Performance Analytics & Trends</h1>", unsafe_allow_html=True)
