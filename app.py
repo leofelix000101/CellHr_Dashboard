@@ -271,7 +271,34 @@ if current_tab == "📂 Upload & Process":
                 #6
                 if st.button("🚀 Save to Database", key="save_db_btn"):
                     try:
-                        # 1. Prepare all data dictionaries into a list
+                        # 1. Define your SQL insert query string first
+                        insert_query = """
+                            INSERT INTO total_cell_down (
+                                site_id, 
+                                alarm_name, 
+                                start_time, 
+                                end_time, 
+                                duration_all_time, 
+                                reason_level_3, 
+                                final_cell_hr, 
+                                reason_level_1, 
+                                g4_cell_hour, 
+                                g2_cell_hour
+                            ) VALUES (
+                                :site_id, 
+                                :alarm_name, 
+                                :start_time, 
+                                :end_time, 
+                                :duration_all_time, 
+                                :reason_level_3, 
+                                :final_cell_hr, 
+                                :reason_level_1, 
+                                :g4_cell_hour, 
+                                :g2_cell_hour
+                            )
+                        """
+
+                        # 2. Prepare all data dictionaries into a list
                         data_list = []
                         for _, row in edited_df.iterrows():
                             data_list.append({
@@ -287,9 +314,9 @@ if current_tab == "📂 Upload & Process":
                                 "g2_cell_hour": row['2G_cell_hour']
                             })
 
+                        # 3. Bulk insert securely and instantly
                         if data_list:
                             with conn.session as s:
-                                # 2. Wrap query and use executemany for bulk insertion
                                 wrapped_insert_query = text(insert_query)
                                 s.execute(wrapped_insert_query, data_list)
                                 s.commit()
