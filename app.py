@@ -6,6 +6,8 @@ import plotly.express as px
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import io
+from sqlalchemy.dialects.postgresql import insert
+
 
 # --- Professional Page Config ---
 st.set_page_config(
@@ -268,44 +270,56 @@ if current_tab == "📂 Upload & Process":
                 st.subheader("📋 Reason Summary")
                 st.dataframe(edited_df.groupby('reason_level_3', as_index=False)['final_cell_hr'].sum(), use_container_width=True)
                 
-                #6
+        
+
+                # 6
                 if st.button("🚀 Save to Database", key="save_db_btn"):
                     try:
-                        insert_query = """
-                            INSERT INTO total_cell_down (
-                                site_id, alarm_name, start_time, end_time, duration_all_time, 
-                                reason_level_3, final_cell_hr, reason_level_1, g4_cell_hour, g2_cell_hour
-                            ) 
-                            VALUES (:site_id, :alarm_name, :start_time, :end_time, :duration_all_time, 
-                                    :reason_level_3, :final_cell_hr, :reason_level_1, :g4_cell_hour, :g2_cell_hour)
-                            ON CONFLICT DO NOTHING;
-                        """
-                        inserted_rows = 0
-                        with conn.session as s:
-                            for _, row in edited_df.iterrows():
-                                # Using parameter dictionaries for st.connection session execution safely
-                                data_dict = {
-                                    "site_id": row['Station standard code'],
-                                    "alarm_name": row['Alarm name'],
-                                    "start_time": row['Start time'],
-                                    "end_time": row['End time'],
-                                    "duration_all_time": row['Duration time (hour)'],
-                                    "reason_level_3": row['reason_level_3'],
-                                    "final_cell_hr": row['final_cell_hr'],
-                                    "reason_level_1": row['Reason'],
-                                    "g4_cell_hour": row['4G_cell_hour'],
-                                    "g2_cell_hour": row['2G_cell_hour']
-                                }
-                                cursor = s.execute(insert_query, data_dict)
-                                if cursor.rowcount > 0:
-                                    inserted_rows += 1
-                            s.commit()
+                        # 1. Prepare clean DataFrame matching your database table columns
+                        db_df = pd.DataFrame({
+                            "site_id": edited_df['Station standard code'],
+                            "alarm_name": edited_df['Alarm name'],
+                            "start_time": edited_df['Start time'],
+                            "end_time": edited_df['End time'],
+                            "duration_all_time": edited_df['Duration time (hour)'],
+                            "reason_level_3": edited_df['reason_level_3'],
+                            "final_cell_hr": edited_df['final_cell_hr'],
+                            "reason_level_1": edited_df['Reason'],
+                            "g4_cell_hour": edited_df['4G_cell_hour'],
+                            "g2_cell_hour": edited_df['2G_cell_hour']
+                        })
+
+                        # 2. Define custom upsert method targeting all unique columns
+                        def insert_on_conflict_nothing(table, conn, keys, data_iter):
+                            data = [dict(zip(keys, row)) for row in data_iter]
                             
-                        if inserted_rows > 0:
-                            st.success(f"✅ Successfully saved {inserted_rows} new records!")
-                        else:
-                            st.info("ℹ️ No new records found. All rows already exist.")
-                            
+                            # All columns that define a duplicate record together
+                            stmt = insert(table.table).values(data).on_conflict_do_nothing(
+                                index_elements=[
+                                    'site_id', 
+                                    'start_time', 
+                                    'end_time', 
+                                    'alarm_name', 
+                                    'reason_level_3', 
+                                    'reason_level_1'
+                                ]
+                            )
+                            result = conn.execute(stmt)
+                            return result.rowcount
+
+                        # 3. Extract engine and perform bulk insert safely
+                        engine = conn.engine
+                        with engine.begin() as connection:
+                            db_df.to_sql(
+                                name="total_cell_down",
+                                con=connection,
+                                if_exists="append",
+                                index=False,
+                                method=insert_on_conflict_nothing
+                            )
+
+                        st.success("✅ Successfully uploaded! Records matching all criteria were safely skipped as duplicates.")
+
                     except Exception as e: 
                         st.error(f"Error: {e}")
 
@@ -620,8 +634,8 @@ elif current_tab == "🔬 Site Daily Down Tracking":
         else:
             return dt.strftime("%B %Y")
 
-    # 2. Fetch all required data
-    tracking_query = text("""
+    # 2. Fetch all required data (FIXED: Converted text clause to string using str())
+    tracking_query = str(text("""
         SELECT 
             t.end_time, 
             t.site_id, 
@@ -631,7 +645,7 @@ elif current_tab == "🔬 Site Daily Down Tracking":
             m.owner 
         FROM total_cell_down t 
         LEFT JOIN site_master m ON t.site_id = m.site_id
-    """)
+    """))
     tracking_data_all = conn.query(tracking_query, ttl=0)
 
     if not tracking_data_all.empty:
@@ -808,8 +822,9 @@ elif current_tab == "📥 Export Data":
     with col_d2:
         end_date = st.date_input("🗓️ End Date", value=datetime.now().date(), key="export_end_date")
     with col_r:
+        # FIXED: Wrapped text() in str()
         reasons_df = conn.query(
-            text("SELECT DISTINCT reason_level_3 FROM total_cell_down WHERE reason_level_3 IS NOT NULL"), 
+            str(text("SELECT DISTINCT reason_level_3 FROM total_cell_down WHERE reason_level_3 IS NOT NULL")), 
             ttl=0
         )
         available_reasons = ["All Reasons"] + list(reasons_df['reason_level_3'].unique()) if not reasons_df.empty else ["All Reasons"]
@@ -817,7 +832,8 @@ elif current_tab == "📥 Export Data":
         
     if st.button("🔍 Generate Excel Report", key="generate_excel_btn"):
         if selected_reason == "All Reasons":
-            export_query = text("""
+            # FIXED: Wrapped text() in str()
+            export_query = str(text("""
                 SELECT 
                     site_id AS "Site Code",
                     alarm_name AS "Alarm Name/Cell ID",
@@ -829,10 +845,11 @@ elif current_tab == "📥 Export Data":
                 FROM total_cell_down
                 WHERE end_time::date >= :start_date AND end_time::date <= :end_date
                 ORDER BY end_time DESC
-            """)
+            """))
             export_df = conn.query(export_query, params={"start_date": start_date, "end_date": end_date}, ttl=0)
         else:
-            export_query = text("""
+            # FIXED: Wrapped text() in str()
+            export_query = str(text("""
                 SELECT 
                     site_id AS "Site Code",
                     alarm_name AS "Alarm Name/Cell ID",
@@ -844,7 +861,7 @@ elif current_tab == "📥 Export Data":
                 FROM total_cell_down
                 WHERE end_time::date >= :start_date AND end_time::date <= :end_date AND reason_level_3 = :reason
                 ORDER BY end_time DESC
-            """)
+            """))
             export_df = conn.query(export_query, params={"start_date": start_date, "end_date": end_date, "reason": selected_reason}, ttl=0)
         
         if not export_df.empty:
@@ -872,18 +889,17 @@ elif current_tab == "📥 Export Data":
             )
         else:
             st.warning("⚠️ No operational records found for the chosen date range and criteria.")
-
 #=================================================================================================
 elif current_tab == "⚠️ Error Checking":
     st.markdown("<h1>⚠️ Data Integrity & Error Checking</h1>", unsafe_allow_html=True)
     st.divider()
 
-    #10
-    query = text("""
+    #10 - FIXED: Wrapped text() in str()
+    query = str(text("""
         SELECT t.site_id, t.reason_level_1, t.reason_level_3, t.final_cell_hr, m.owner, m.power_type 
         FROM total_cell_down t
         LEFT JOIN site_master m ON t.site_id = m.site_id
-    """)
+    """))
     df = conn.query(query, ttl=0)
 
     if not df.empty:
@@ -991,9 +1007,9 @@ elif current_tab == "🏆 Team Performance":
     st.markdown("<h1>🏆 Team Performance Dashboard</h1>", unsafe_allow_html=True)
     st.divider()
     
-    #11
-    master_df = conn.query(text("SELECT site_id, fot_teams FROM site_master"), ttl=0)
-    down_df = conn.query(text("SELECT final_cell_hr, end_time, site_id FROM total_cell_down"), ttl=0)
+    #11 - FIXED: Wrapped both text() in str()
+    master_df = conn.query(str(text("SELECT site_id, fot_teams FROM site_master")), ttl=0)
+    down_df = conn.query(str(text("SELECT final_cell_hr, end_time, site_id FROM total_cell_down")), ttl=0)
 
     if not master_df.empty:
         # 1. Prepare static team sites (using full master list)
