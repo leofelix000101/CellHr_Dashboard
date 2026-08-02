@@ -100,7 +100,7 @@ with st.sidebar:
     developer_html = (
         "<h4 style='color:#475569; margin-bottom: 5px;'>🔧 Developer Profile</h4>"
         "<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>Role:</strong> Radio Engineer</p>"
-        "<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>System:</strong> Local DB / PostgreSQL</p>"
+        "<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>System:</strong> Streamlit / Superbase</p>"
         "<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>Status:</strong> Active Session ✅</p>"
     )
     st.markdown(developer_html, unsafe_allow_html=True)
