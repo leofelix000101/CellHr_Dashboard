@@ -761,6 +761,11 @@ elif current_tab == "📥 Export Data":
         
         if not export_df.empty:
             export_df["Total Cell Hour"] = pd.to_numeric(export_df["Total Cell Hour"], errors='coerce').fillna(0.0)
+            
+            # --- FIX: Strip timezones so Excel doesn't crash ---
+            export_df["Start Time"] = pd.to_datetime(export_df["Start Time"]).dt.tz_localize(None)
+            export_df["End Time"] = pd.to_datetime(export_df["End Time"]).dt.tz_localize(None)
+            
             st.success(f"📊 Found {len(export_df)} operational logs matching your criteria.")
             st.dataframe(export_df, use_container_width=True)
             
