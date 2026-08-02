@@ -325,16 +325,26 @@ if current_tab == "📂 Upload & Process":
             edited_new_sites = st.data_editor(new_site_df, use_container_width=True)
             
             if st.button("🚀 Save All New Sites to Master"): 
-                    with conn.session as s:
-                        for site_id, row in edited_new_sites.iterrows():
-                            cols = ', '.join([f'"{c}"' for c in edited_new_sites.columns])
-                            vals = tuple([site_id] + [None if pd.isna(x) else x for x in row.tolist()])
-                            placeholders = ', '.join(['%s'] * len(vals))
-                            s.execute(text(f'INSERT INTO site_master ("site_id", {cols}) VALUES ({placeholders})'), vals)
-                        s.commit()
+                try:
+                    # Reset the index so 'site_id' becomes a standard column in the dataframe
+                    insert_df = edited_new_sites.reset_index()
+                    
+                    # Safely bulk-insert the dataframe into the database
+                    engine = conn.engine
+                    with engine.begin() as connection:
+                        insert_df.to_sql(
+                            name="site_master", 
+                            con=connection, 
+                            if_exists="append", 
+                            index=False
+                        )
+                        
                     st.cache_data.clear()
                     st.success("✅ New data saved to site_master.")
                     st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"⚠️ Database Error: {e}")
         else: 
             master_full = conn.query("SELECT * FROM site_master", ttl="10m")
             df = df.merge(master_full, left_on='Station standard code', right_on='site_id', how='left')
