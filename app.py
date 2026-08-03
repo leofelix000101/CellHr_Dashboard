@@ -87,6 +87,7 @@ with st.sidebar:
             "📂 Upload & Process", 
             "📈 Analytics & Trends", 
             "🔬 Site Daily Down Tracking", 
+            "🌊 Flood & Disaster Tracking",
             "🏆 Team Performance",
             "📥 Export Data",
             "⚠️ Error Checking"
@@ -325,26 +326,16 @@ if current_tab == "📂 Upload & Process":
             edited_new_sites = st.data_editor(new_site_df, use_container_width=True)
             
             if st.button("🚀 Save All New Sites to Master"): 
-                try:
-                    # Reset the index so 'site_id' becomes a standard column in the dataframe
-                    insert_df = edited_new_sites.reset_index()
-                    
-                    # Safely bulk-insert the dataframe into the database
-                    engine = conn.engine
-                    with engine.begin() as connection:
-                        insert_df.to_sql(
-                            name="site_master", 
-                            con=connection, 
-                            if_exists="append", 
-                            index=False
-                        )
-                        
+                    with conn.session as s:
+                        for site_id, row in edited_new_sites.iterrows():
+                            cols = ', '.join([f'"{c}"' for c in edited_new_sites.columns])
+                            vals = tuple([site_id] + [None if pd.isna(x) else x for x in row.tolist()])
+                            placeholders = ', '.join(['%s'] * len(vals))
+                            s.execute(text(f'INSERT INTO site_master ("site_id", {cols}) VALUES ({placeholders})'), vals)
+                        s.commit()
                     st.cache_data.clear()
                     st.success("✅ New data saved to site_master.")
                     st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"⚠️ Database Error: {e}")
         else: 
             master_full = conn.query("SELECT * FROM site_master", ttl="10m")
             df = df.merge(master_full, left_on='Station standard code', right_on='site_id', how='left')
@@ -377,6 +368,15 @@ if current_tab == "📂 Upload & Process":
                 reason_1_raw = str(row.get('Reason', '')).strip()
                 reason_1_clean = reason_1_raw.lower().replace('nan', '')
                 
+                # --- FLOOD ISSUE / NATURAL CALAMITY OVERRIDE ---
+                calamity_phrases = [
+                    "tco_natural calamity_cannot get to site removed because of natural calamity, security problem",
+                    "natural calamity_cannot get to site because of natural calamity,security problems"
+                ]
+                for phrase in calamity_phrases:
+                    if phrase in reason_1_clean:
+                        return "Flood Issue"
+
                 if "majeure impact_planned/cr" in reason_1_clean: return "Majeure cause"
                 if "loss_power_loss ac of rru extend, small cell" in reason_1_clean: return "Small Cell Down"
                 if "tco_low ac, don't charge the battery affect site/cell down" in reason_1_clean: return "Small Cell Down"
@@ -420,7 +420,7 @@ if current_tab == "📂 Upload & Process":
                     "power_type": st.column_config.TextColumn("Power Type", disabled=True),
                     "reason_level_3": st.column_config.SelectboxColumn(
                         "Reason Level 3", 
-                        options=["Cell Down", "Towerco power issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power"],
+                        options=["Cell Down", "Towerco power issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power", "Flood Issue"],
                         required=True
                     )
                 }, 
@@ -782,17 +782,26 @@ elif current_tab == "📥 Export Data":
             st.warning("⚠️ No operational records found for the chosen date range and criteria.")
 
 #=================================================================================================
+# ======================================================================================
 elif current_tab == "⚠️ Error Checking":
+    # Display persistent success message if it exists from a previous run
+    if "override_success_msg" in st.session_state:
+        st.success(st.session_state["override_success_msg"])
+        del st.session_state["override_success_msg"]
+
     st.markdown("<h1>⚠️ Data Integrity & Error Checking</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#64748B;'>Audit configuration logs, identify NOC/OCE errors, and manually override incorrect or unknown Reason Level 3 entries.</p>", unsafe_allow_html=True)
     st.divider()
 
     available_cycles = get_available_cycles()
-    selected_cycle_err = st.selectbox("🗓️ Select Cycle for Error Audit:", available_cycles if available_cycles else ["None"])
+    selected_cycle_err = st.selectbox("🗓️ Select Cycle for Error Audit:", available_cycles if available_cycles else ["None"], key="err_cycle_sel")
     
     if selected_cycle_err != "None":
         s_bound, e_bound = get_cycle_date_bounds(selected_cycle_err)
+        
+        # Pull original values including current reason_level_3 to safely match records
         query = """
-            SELECT t.site_id, t.reason_level_1, t.reason_level_3, t.final_cell_hr, m.owner, m.power_type 
+            SELECT t.site_id, t.alarm_name, t.start_time, t.end_time, t.reason_level_1, t.reason_level_3, t.final_cell_hr, m.owner, m.power_type 
             FROM total_cell_down t
             LEFT JOIN site_master m ON t.site_id = m.site_id
             WHERE t.end_time >= :start_bound AND t.end_time <= :end_bound
@@ -801,6 +810,9 @@ elif current_tab == "⚠️ Error Checking":
 
         if not df.empty:
             df['final_cell_hr'] = pd.to_numeric(df['final_cell_hr'], errors='coerce').fillna(0.0)
+            df['end_time_dt'] = pd.to_datetime(df['end_time'])
+            df['Date'] = df['end_time_dt'].dt.date
+            
             st.subheader("📋 Configuration Review")
 
             not_mytel_df = df[(df['owner'].str.lower() != 'mytel') & (df['power_type'] == 'Self Power') & (df['reason_level_3'].notna())]
@@ -827,12 +839,22 @@ elif current_tab == "⚠️ Error Checking":
             st.subheader("🔍 Identified Errors")
             def get_error_type(row):
                 r1 = str(row.get('reason_level_1', '')).lower()
-                r3 = str(row.get('reason_level_3', '')).lower()
+                r3 = str(row.get('reason_level_3', '')).lower().strip()
                 power = str(row.get('power_type', '')).strip()
                 
-                if power == 'Self Power' and ('tco' in r1 or 'towerco' in r1): return "NOC Error"
-                is_r3_invalid = not row.get('reason_level_3') or str(row.get('reason_level_3')).strip() == ""
-                if power == 'Self Power' and ('tco' in r3 or 'tower' in r3 or is_r3_invalid): return "OCE Error"
+                # Rule 1: If reason_level_3 is blank, null, 'nan', or 'unknown', classify as an OCE Error
+                is_r3_invalid = not row.get('reason_level_3') or r3 == "" or r3 == "nan" or r3 == "unknown"
+                if is_r3_invalid:
+                    return "OCE Error"
+
+                # Rule 2: NOC Errors based on power and reason level 1 mismatches
+                if power == 'Self Power' and ('tco' in r1 or 'towerco' in r1): 
+                    return "NOC Error"
+                
+                # Rule 3: OCE Errors if power conflicts with reason level 3 keywords
+                if power == 'Self Power' and ('tco' in r3 or 'tower' in r3): 
+                    return "OCE Error"
+                    
                 return None
 
             df['Error_Type'] = df.apply(get_error_type, axis=1)
@@ -850,10 +872,156 @@ elif current_tab == "⚠️ Error Checking":
             st.metric("Total OCE Error Sites", len(oce_df))
             if not oce_df.empty: st.dataframe(oce_df, use_container_width=True)
             else: st.success("No OCE errors found.")
+
+            # ==========================================================================
+            # --- IMPORTANT: OVERRIDE & FIX INCORRECT ERROR LOGS MODULE ---
+            # ==========================================================================
+            st.markdown("---")
+            st.markdown(
+                """
+                > ⚠️ **CRITICAL NOTICE: MANUAL ERROR OVERRIDE & DATABASE CORRECTION**  
+                > Please select a specific **Operational Date** and **Reason Level 3** from the filters below to load and correct records. 
+                > Tables will only render upon selection to optimize performance and prevent unique constraint conflicts.
+                """, 
+                unsafe_allow_html=True
+            )
+            st.subheader("🛠️ Corrective Override Control Panel")
+
+            col_f1, col_f2 = st.columns(2)
+            
+            unique_dates = sorted(df['Date'].dropna().unique())
+            with col_f1:
+                selected_override_date = st.selectbox("📅 Select Operational Date for Correction:", options=["-- Please Select Date --"] + [str(d) for d in unique_dates], key="override_date_select")
+            
+            unique_reasons = sorted(df['reason_level_3'].dropna().astype(str).unique())
+            with col_f2:
+                selected_override_reason = st.selectbox("🔬 Select Reason Level 3 to Filter:", options=["-- Please Select Reason --"] + unique_reasons, key="override_reason_select")
+
+            # Lazy load: Only render the editor when both filters are chosen
+            if selected_override_date != "-- Please Select Date --" and selected_override_reason != "-- Please Select Reason --":
+                filtered_override_df = df[(df['Date'].astype(str) == selected_override_date) & (df['reason_level_3'].astype(str) == selected_override_reason)].copy()
+
+                if not filtered_override_df.empty:
+                    # Keep track of the original reason level 3 values to prevent unique constraint violations during update
+                    filtered_override_df['original_reason_level_3'] = filtered_override_df['reason_level_3']
+                    
+                    st.write(f"Showing **{len(filtered_override_df)}** filtered records available for correction:")
+
+                    editable_display_cols = ['site_id', 'alarm_name', 'start_time', 'end_time', 'reason_level_1', 'original_reason_level_3', 'reason_level_3', 'final_cell_hr', 'power_type', 'owner']
+                    
+                    edited_correction_df = st.data_editor(
+                        filtered_override_df[editable_display_cols],
+                        column_config={
+                            "site_id": st.column_config.TextColumn("Site ID", disabled=True),
+                            "alarm_name": st.column_config.TextColumn("Alarm Name", disabled=True),
+                            "start_time": st.column_config.DatetimeColumn("Start Time", disabled=True),
+                            "end_time": st.column_config.DatetimeColumn("End Time", disabled=True),
+                            "reason_level_1": st.column_config.TextColumn("Reason Level 1", disabled=True),
+                            "original_reason_level_3": st.column_config.TextColumn("Original Reason Level 3", disabled=True),
+                            "reason_level_3": st.column_config.SelectboxColumn(
+                                "Reason Level 3 (Editable Override)", 
+                                options=["Cell Down", "Towerco power issue", "Flood Issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power", "Unknown"],
+                                required=True
+                            ),
+                            "final_cell_hr": st.column_config.NumberColumn("Cell HR", disabled=True, format="%.2f"),
+                            "power_type": st.column_config.TextColumn("Power Type", disabled=True),
+                            "owner": st.column_config.TextColumn("Owner", disabled=True)
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                        key="error_correction_data_editor"
+                    )
+
+                    if st.button("🚀 Save Overrides & Update Database", type="primary", key="save_overrides_btn"):
+                        try:
+                            engine = conn.engine
+                            update_count = 0
+                            
+                            with engine.begin() as connection:
+                                for _, row in edited_correction_df.iterrows():
+                                    new_val = row['reason_level_3']
+                                    orig_val = row['original_reason_level_3']
+                                    
+                                    # If the user didn't actually change anything for this row, skip it
+                                    if new_val == orig_val:
+                                        continue
+
+                                    # 1. Check if a row with the target 'new_reason' already exists to avoid unique violation crash
+                                    check_stmt = text("""
+                                        SELECT 1 FROM total_cell_down 
+                                        WHERE site_id = :s_id 
+                                          AND start_time = :st_time 
+                                          AND end_time = :e_time 
+                                          AND alarm_name = :al_name 
+                                          AND reason_level_3 = :new_reason
+                                          AND reason_level_1 = :r1
+                                    """)
+                                    exists = connection.execute(check_stmt, {
+                                        "s_id": row['site_id'],
+                                        "st_time": row['start_time'],
+                                        "e_time": row['end_time'],
+                                        "al_name": row['alarm_name'],
+                                        "new_reason": new_val,
+                                        "r1": row['reason_level_1']
+                                    }).fetchone()
+
+                                    if exists:
+                                        # If the target record already exists, delete the old conflicting record
+                                        del_stmt = text("""
+                                            DELETE FROM total_cell_down 
+                                            WHERE site_id = :s_id 
+                                              AND start_time = :st_time 
+                                              AND end_time = :e_time 
+                                              AND alarm_name = :al_name 
+                                              AND reason_level_3 = :orig_reason
+                                              AND reason_level_1 = :r1
+                                        """)
+                                        connection.execute(del_stmt, {
+                                            "s_id": row['site_id'],
+                                            "st_time": row['start_time'],
+                                            "e_time": row['end_time'],
+                                            "al_name": row['alarm_name'],
+                                            "orig_reason": orig_val,
+                                            "r1": row['reason_level_1']
+                                        })
+                                    else:
+                                        # Safe to perform standard update since no duplicate collision exists
+                                        update_stmt = text("""
+                                            UPDATE total_cell_down 
+                                            SET reason_level_3 = :new_reason 
+                                            WHERE site_id = :s_id 
+                                              AND start_time = :st_time 
+                                              AND end_time = :e_time 
+                                              AND alarm_name = :al_name
+                                              AND reason_level_3 = :orig_reason
+                                              AND reason_level_1 = :r1
+                                        """)
+                                        connection.execute(update_stmt, {
+                                            "new_reason": new_val,
+                                            "orig_reason": orig_val,
+                                            "s_id": row['site_id'],
+                                            "st_time": row['start_time'],
+                                            "e_time": row['end_time'],
+                                            "al_name": row['alarm_name'],
+                                            "r1": row['reason_level_1']
+                                        })
+                                    update_count += 1
+
+                            st.cache_data.clear()
+                            
+                            # Store success message in session state so it survives the rerun and displays correctly
+                            st.session_state["override_success_msg"] = f"✅ Successfully updated {update_count} records in the database with the new Reason Level 3 overrides!"
+                            st.rerun()
+
+                        except Exception as e:
+                            st.error(f"⚠️ Database Update Error: {e}")
+                else:
+                    st.info("ℹ️ No records match your selected date and reason criteria.")
+            else:
+                st.info("👆 Please select both a specific **Operational Date** and a **Reason Level 3** from the dropdown menus above to load and edit records.")
         else:
             st.info("No data available for selected cycle.")
 
-#=================================================================================================
 elif current_tab == "🏆 Team Performance":
     st.markdown("<h1>🏆 Team Performance Dashboard</h1>", unsafe_allow_html=True)
     st.divider()
@@ -907,3 +1075,341 @@ elif current_tab == "🏆 Team Performance":
             )
     else:
         st.warning("⚠️ Please select at least one cycle.")
+
+# ==================================================================================================
+# ==================================================================================================
+# ==================================================================================================
+# ==================================================================================================
+elif current_tab == "🌊 Flood & Disaster Tracking":
+    st.markdown("<h1>🌊 Natural Disaster & Flood Tracking Command Center</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#64748B;'>Complete monitoring, precise alarm calculation logic, trends, and still-down site highlighting.</p>", unsafe_allow_html=True)
+    st.divider()
+
+    col_u1, col_u2 = st.columns(2)
+    with col_u1:
+        dual_list_upload = st.file_uploader("📂 Upload Site Lists (Col A: Monitoring Sites, Col B: Flooded Sites)", type=["xlsx", "csv"], key="dual_list_up")
+    with col_u2:
+        current_down_upload = st.file_uploader("📂 Upload Live Current Down File (e.g. Flood.xlsx)", type=["xlsx", "csv"], key="current_down_up")
+
+    st.markdown("### 📅 Select Flood Period Date Range")
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        flood_start_date = st.date_input("Start Date", value=datetime.now().date() - timedelta(days=7), key="flood_start_dt")
+    with col_d2:
+        flood_end_date = st.date_input("End Date", value=datetime.now().date(), key="flood_end_dt")
+
+    if dual_list_upload is not None and flood_start_date and flood_end_date:
+        try:
+            list_df = pd.read_csv(dual_list_upload) if dual_list_upload.name.endswith('.csv') else pd.read_excel(dual_list_upload)
+            cols_available = list_df.columns.tolist()
+            monitoring_sites = []
+            flooded_sites = []
+            
+            if len(cols_available) >= 1:
+                monitoring_sites = [str(s).strip().upper() for s in list_df.iloc[:, 0].dropna().tolist() if str(s).strip() and str(s).lower() != 'nan']
+            if len(cols_available) >= 2:
+                flooded_sites = [str(s).strip().upper() for s in list_df.iloc[:, 1].dropna().tolist() if str(s).strip() and str(s).lower() != 'nan']
+                
+        except Exception as e:
+            st.error(f"Error reading site lists file: {e}")
+            monitoring_sites, flooded_sites = [], []
+
+        all_target_sites = list(set(monitoring_sites + flooded_sites))
+
+        if not all_target_sites:
+            st.warning("⚠️ Please ensure your uploaded file contains valid site IDs in Column A or Column B.")
+        else:
+            s_bound = pd.to_datetime(flood_start_date)
+            e_bound = pd.to_datetime(flood_end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            
+            # Generate expected date columns chronologically
+            date_range_list = pd.date_range(start=flood_start_date, end=flood_end_date)
+            expected_date_strs = [d.strftime('%b-%d') for d in date_range_list]
+
+            # --- Process Live Current Down File using Exact Logic & Deduplication ---
+            live_down_records = []
+            live_down_site_set = set()
+            
+            if current_down_upload:
+                try:
+                    cd_df = pd.read_excel(current_down_upload, skiprows=1) if current_down_upload.name.endswith('.xlsx') else pd.read_csv(current_down_upload, skiprows=1)
+                    cd_df.columns = cd_df.iloc[0]
+                    cd_df = cd_df.drop(0).reset_index(drop=True)
+                    cd_df.columns = [str(c).strip() for c in cd_df.columns]
+                    
+                    # --- REMOVE DUPLICATES ---
+                    dedup_subset = [c for c in ['Station standard code', 'Cell name', 'Alarm name', 'Start time'] if c in cd_df.columns]
+                    if dedup_subset:
+                        cd_df = cd_df.drop_duplicates(subset=dedup_subset).copy()
+
+                    st_col = [c for c in cd_df.columns if 'station' in c.lower() or 'code' in c.lower() or 'site' in c.lower()][0]
+                    dur_col = [c for c in cd_df.columns if 'duration' in c.lower()][0]
+                    alarm_col = [c for c in cd_df.columns if 'alarm' in c.lower() and 'name' in c.lower()][0]
+                    cell_down_col = [c for c in cd_df.columns if 'cell down' in c.lower()][0]
+                    num_cell_col = [c for c in cd_df.columns if 'number' in c.lower()][0]
+                    start_time_col = [c for c in cd_df.columns if 'start time' in c.lower()][0]
+
+                    cd_df['Station_Clean'] = cd_df[st_col].astype(str).str.strip().str.upper()
+                    filtered_cd = cd_df[cd_df['Station_Clean'].isin(all_target_sites)].copy()
+
+                    def calculate_hours(row):
+                        duration = pd.to_numeric(row[dur_col], errors='coerce') or 0.0
+                        alarm = str(row[alarm_col]).strip()
+                        cell_down = str(row[cell_down_col]).strip().lower()
+                        num_cells = pd.to_numeric(row[num_cell_col], errors='coerce') or 1
+                        
+                        g4_hour = 0
+                        if cell_down == 'single' and alarm == 'Cell Unavailable': 
+                            g4_hour = duration * 1
+                        elif alarm == 'NE Is Disconnected.': 
+                            g4_hour = duration * num_cells
+                        
+                        g2_hour = 0
+                        if cell_down == 'single' and alarm == 'GSM CELL OUT OF SERVICE': 
+                            g2_hour = duration * 1
+                        elif alarm == 'CSL Fault': 
+                            g2_hour = duration * num_cells
+                        
+                        return pd.Series([g4_hour, g2_hour, g4_hour + g2_hour])
+
+                    filtered_cd[['4G_cell_hour', '2G_cell_hour', 'final_cell_hr']] = filtered_cd.apply(calculate_hours, axis=1)
+
+                    for _, row in filtered_cd.iterrows():
+                        s_id = row['Station_Clean']
+                        start_dt = pd.to_datetime(row.get(start_time_col, datetime.now()), errors='coerce', dayfirst=True)
+                        
+                        if pd.notna(start_dt):
+                            d_str = start_dt.strftime('%b-%d')
+                        else:
+                            d_str = expected_date_strs[-1] if expected_date_strs else datetime.now().strftime('%b-%d')
+
+                        live_down_records.append({
+                            'site_id': s_id,
+                            'alarm_name': str(row[alarm_col]).strip(),
+                            'calculated_cell_hr': float(row['final_cell_hr'] or 0.0),
+                            'Start_DT': start_dt,
+                            'Date_Str': d_str
+                        })
+                        live_down_site_set.add(s_id)
+                except Exception as e:
+                    st.error(f"Error processing current down file: {e}")
+
+            live_down_detail_df = pd.DataFrame(live_down_records)
+
+            # --- Diagnostic Debug Expander ---
+            with st.expander("🔍 DEBUG: View Processed Still-Down Records", expanded=False):
+                if not live_down_detail_df.empty:
+                    st.write(f"Total matched still-down records: {len(live_down_detail_df)}")
+                    st.dataframe(live_down_detail_df, use_container_width=True)
+                else:
+                    st.warning("⚠️ No still-down records matched your site list IDs.")
+
+            # --- Pull Database Records ---
+            placeholders = ", ".join([f":site_{i}" for i in range(len(all_target_sites))])
+            params = {f"site_{i}": s for i, s in enumerate(all_target_sites)}
+            params["start_bound"] = s_bound
+            params["end_bound"] = e_bound
+
+            flood_query = f"""
+                SELECT t.end_time, t.start_time, t.site_id, t.final_cell_hr, m.fot_teams AS team, m.owner 
+                FROM total_cell_down t 
+                LEFT JOIN site_master m ON t.site_id = m.site_id
+                WHERE t.end_time >= :start_bound 
+                  AND t.end_time <= :end_bound
+                  AND t.site_id IN ({placeholders})
+            """
+            db_flood_df = conn.query(flood_query, params=params, ttl="10m")
+
+            if not db_flood_df.empty:
+                db_flood_df['final_cell_hr'] = pd.to_numeric(db_flood_df['final_cell_hr'], errors='coerce').fillna(0.0)
+                db_flood_df['end_time_dt'] = pd.to_datetime(db_flood_df['end_time'])
+                db_flood_df['Date_Obj'] = db_flood_df['end_time_dt'].dt.date
+                db_flood_df['Date_Str'] = db_flood_df['end_time_dt'].dt.strftime('%b-%d')
+                db_flood_df['site_id'] = db_flood_df['site_id'].astype(str).str.strip().str.upper()
+                db_flood_df['team'] = db_flood_df['team'].fillna('Unassigned').astype(str).str.strip()
+
+            # --- Status Calculation (Still Down vs Already Up) ---
+            mon_down = [s for s in monitoring_sites if s in live_down_site_set]
+            mon_up = [s for s in monitoring_sites if s not in live_down_site_set]
+
+            flood_down = [s for s in flooded_sites if s in live_down_site_set]
+            flood_up = [s for s in flooded_sites if s not in live_down_site_set]
+
+            st.divider()
+            st.subheader("📊 Live Status Overview: Still Down vs Already Up")
+            
+            col_m_stat, col_f_stat = st.columns(2)
+            
+            with col_m_stat:
+                st.markdown(f"### 📋 Monitoring Sites ({len(monitoring_sites)} Total)")
+                mm1, mm2 = st.columns(2)
+                mm1.metric("🔴 Still Down", len(mon_down), delta="Active Alarms", delta_color="inverse")
+                mm2.metric("🟢 Already Up", len(mon_up))
+                if len(mon_down) > 0:
+                    with st.expander("View Still Down Monitoring Sites"):
+                        st.write(mon_down)
+
+            with col_f_stat:
+                st.markdown(f"### 🌊 Flooded Sites ({len(flooded_sites)} Total)")
+                fm1, fm2 = st.columns(2)
+                fm1.metric("🔴 Still Down", len(flood_down), delta="Active Alarms", delta_color="inverse")
+                fm2.metric("🟢 Already Up", len(flood_up))
+                if len(flood_down) > 0:
+                    with st.expander("View Still Down Flooded Sites"):
+                        st.write(flood_down)
+
+            days_passed = max((e_bound - s_bound).days + 1, 1)
+
+            def generate_full_coverage_summary(target_list, label_name):
+                st.divider()
+                st.subheader(f"📋 Summary Table & Matrix: {label_name} ({len(target_list)} Sites)")
+                
+                if not target_list:
+                    st.info(f"No sites provided for {label_name}.")
+                    return pd.DataFrame()
+
+                team_map = {}
+                if not db_flood_df.empty:
+                    team_map = db_flood_df.set_index('site_id')['team'].to_dict()
+
+                rows_data = []
+                for s_id in target_list:
+                    s_team = team_map.get(s_id, 'Unassigned')
+                    row_dict = {
+                        'Site ID': s_id,
+                        'Team': s_team
+                    }
+                    
+                    date_hrs = {d_str: 0.0 for d_str in expected_date_strs}
+                    
+                    # 1. Historical DB logs
+                    if not db_flood_df.empty:
+                        sub_site = db_flood_df[db_flood_df['site_id'] == s_id]
+                        for _, r_db in sub_site.iterrows():
+                            d_str = r_db['Date_Str']
+                            if d_str in date_hrs:
+                                date_hrs[d_str] += float(r_db['final_cell_hr'] or 0.0)
+
+                    # 2. Live Still Down records (Accumulate using += on exact start date)
+                    if s_id in live_down_site_set and not live_down_detail_df.empty:
+                        live_sub = live_down_detail_df[live_down_detail_df['site_id'] == s_id]
+                        for _, r_live in live_sub.iterrows():
+                            d_str = r_live['Date_Str']
+                            calc_hr = float(r_live['calculated_cell_hr'] or 0.0)
+                            
+                            if d_str in date_hrs:
+                                date_hrs[d_str] += calc_hr
+                            else:
+                                if expected_date_strs:
+                                    date_hrs[expected_date_strs[-1]] += calc_hr
+
+                    for d_str in expected_date_strs:
+                        date_hrs[d_str] = float(date_hrs[d_str])
+
+                    total_hr = sum(date_hrs.values())
+                    down_days = sum(1 for d_str, hr in date_hrs.items() if hr > 0.0)
+                    avg_hr = float(total_hr / days_passed)
+
+                    # Assign key summary metrics first
+                    row_dict['Total Cell Hr'] = float(total_hr)
+                    row_dict['Total Time Down'] = int(down_days)
+                    row_dict['Average Cell Hr'] = float(avg_hr)
+                    row_dict['%'] = 0.0  # Placeholder, calculated below
+
+                    # Append chronological daily date columns after metrics
+                    row_dict.update(date_hrs)
+                    rows_data.append(row_dict)
+
+                summary_df = pd.DataFrame(rows_data)
+                summary_df = summary_df.fillna(0.0)
+
+                grand_sum = summary_df['Total Cell Hr'].sum()
+                summary_df['%'] = (summary_df['Total Cell Hr'] / grand_sum * 100) if grand_sum > 0 else 0.0
+
+                # Ensure exact column order: Site ID, Team, Total Cell Hr, Total Time Down, Average Cell Hr, %, [Date columns...]
+                fixed_cols = ['Site ID', 'Team', 'Total Cell Hr', 'Total Time Down', 'Average Cell Hr', '%']
+                final_col_order = fixed_cols + expected_date_strs
+                summary_df = summary_df[final_col_order]
+
+                # Styling function to highlight still-down sites in soft red/coral
+                def highlight_still_down(row):
+                    is_down = row['Site ID'] in live_down_site_set
+                    return ['background-color: #FFCDD2; color: #B71C1C; font-weight: bold;' if is_down else '' for _ in row]
+
+                styled_summary = summary_df.style.apply(highlight_still_down, axis=1).format({
+                    "Total Cell Hr": "{:.1f}",
+                    "Average Cell Hr": "{:.1f}",
+                    "%": "{:.1f}%",
+                    "Total Time Down": "{:d}",
+                    **{d_col: "{:.1f}" for d_col in expected_date_strs}
+                })
+
+                st.dataframe(
+                    styled_summary,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # Export Report Button
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+                    summary_df.to_excel(writer, sheet_name=f'{label_name} Summary', index=False)
+                
+                st.download_button(
+                    label=f"📥 Download {label_name} Summary Report (.xlsx)",
+                    data=buf.getvalue(),
+                    file_name=f"{label_name.replace(' ', '_')}_Report_{flood_start_date}_to_{flood_end_date}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_full_{label_name}"
+                )
+
+                return summary_df
+
+            # --- Generate Summaries ---
+            flooded_summary_df = pd.DataFrame()
+            if flooded_sites:
+                flooded_summary_df = generate_full_coverage_summary(flooded_sites, "Flooded Sites")
+            
+            if monitoring_sites:
+                generate_full_coverage_summary(monitoring_sites, "Monitoring Sites")
+
+            # --- Chronological Trend Chart for Flooded Sites ---
+            if not flooded_summary_df.empty:
+                st.divider()
+                st.subheader("📈 Cell Hour Trend for Flooded Sites")
+                
+                trend_melt = flooded_summary_df.melt(
+                    id_vars=['Site ID', 'Team', 'Total Cell Hr', 'Total Time Down', 'Average Cell Hr', '%'], 
+                    value_vars=expected_date_strs, 
+                    var_name='Date_Str', 
+                    value_name='Cell_Hour'
+                )
+                
+                trend_melt['Date_Obj'] = pd.to_datetime(trend_melt['Date_Str'], format='%b-%d', errors='coerce')
+                trend_grouped = trend_melt.groupby(['Date_Obj', 'Date_Str'])['Cell_Hour'].sum().reset_index().sort_values(by='Date_Obj')
+
+                fig_flood_trend = px.area(
+                    trend_grouped, x='Date_Str', y='Cell_Hour', 
+                    markers=True, title="Daily Accumulated Cell Hours Across Flooded Sites (Chronological)",
+                    color_discrete_sequence=["#0EA5E9"]
+                )
+                
+                fig_flood_trend.update_traces(
+                    mode='lines+markers+text', 
+                    texttemplate='%{y:.1f}', 
+                    textposition='top center',
+                    cliponaxis=False
+                )
+                
+                max_val = trend_grouped['Cell_Hour'].max() if not trend_grouped.empty else 100
+                fig_flood_trend.update_layout(
+                    xaxis_title="Date", 
+                    yaxis_title="Total Cell Hour", 
+                    yaxis=dict(range=[0, max_val * 1.25]), 
+                    template="plotly_white"
+                )
+                
+                st.plotly_chart(fig_flood_trend, use_container_width=True)
+
+    else:
+        st.warning("⚠️ Please **upload your Site Lists file** and select your **Flood Period Date Range** above.")
