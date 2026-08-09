@@ -41,10 +41,11 @@ conn = st.connection(
     pool_recycle=300
 ) 
 
-# --- Professional Secure Login Screen ---
+# --- Professional Secure Login Screen (with Role-Based Tracking) ---
 def check_password():
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
+        st.session_state["role"] = None
 
     if st.session_state["authenticated"]:
         return True
@@ -65,6 +66,11 @@ def check_password():
             if st.button("Access Dashboard", use_container_width=True, type="primary"):
                 if user == "mytel" and password == "telecom@ops2026":
                     st.session_state["authenticated"] = True
+                    st.session_state["role"] = "admin"
+                    st.rerun()
+                elif user == "VCM" and password == "telecom@2026":
+                    st.session_state["authenticated"] = True
+                    st.session_state["role"] = "view_only"
                     st.rerun()
                 else:
                     st.error("❌ Invalid Username or Password Credentials.")
@@ -72,6 +78,30 @@ def check_password():
 
 if not check_password():
     st.stop()
+
+# --- Determine Menu Options based on Role ---
+user_role = st.session_state.get("role", "admin")
+
+if user_role == "view_only":
+    menu_options = [
+        "📈 Analytics & Trends", 
+        "🔬 Site Daily Down Tracking", 
+        "🌊 Flood & Disaster Tracking",
+        "🏆 Team Performance",
+        "📥 Export Data"
+    ]
+    role_display_name = "View Only (VCM)"
+else:
+    menu_options = [
+        "📂 Upload & Process", 
+        "📈 Analytics & Trends", 
+        "🔬 Site Daily Down Tracking", 
+        "🌊 Flood & Disaster Tracking",
+        "🏆 Team Performance",
+        "📥 Export Data",
+        "⚠️ Error Checking"
+    ]
+    role_display_name = "Radio Engineer / Admin"
 
 # --- Modern Sidebar Implementation & Developer Info ---
 with st.sidebar:
@@ -83,15 +113,7 @@ with st.sidebar:
     
     current_tab = st.radio(
         "🎛️ Menu",
-        options=[
-            "📂 Upload & Process", 
-            "📈 Analytics & Trends", 
-            "🔬 Site Daily Down Tracking", 
-            "🌊 Flood & Disaster Tracking",
-            "🏆 Team Performance",
-            "📥 Export Data",
-            "⚠️ Error Checking"
-        ],
+        options=menu_options,
         label_visibility="collapsed"
     )
     
@@ -99,9 +121,9 @@ with st.sidebar:
     st.divider()
     
     developer_html = (
-        "<h4 style='color:#475569; margin-bottom: 5px;'>🔧 Developer Profile</h4>"
-        "<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>Role:</strong> Radio Engineer</p>"
-        "<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>System:</strong> Streamlit / Superbase</p>"
+        f"<h4 style='color:#475569; margin-bottom: 5px;'>🔧 User Profile</h4>"
+        f"<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>Role:</strong> {role_display_name}</p>"
+        "<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>System:</strong> Streamlit / Supabase</p>"
         "<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>Status:</strong> Active Session ✅</p>"
     )
     st.markdown(developer_html, unsafe_allow_html=True)
@@ -109,6 +131,7 @@ with st.sidebar:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🚪 Sign Out", use_container_width=True, type="secondary"):
         st.session_state["authenticated"] = False
+        st.session_state["role"] = None
         st.rerun()
 
 
