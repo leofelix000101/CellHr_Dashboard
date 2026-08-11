@@ -389,8 +389,15 @@ if current_tab == "📂 Upload & Process":
 
             df[['4G_cell_hour', '2G_cell_hour', 'final_cell_hr']] = df.apply(calculate_hours, axis=1)
             
+            def is_small_cell(cell_name):
+                # Check if cell name has at least 3 characters from the end and that 3rd character from last is alphabetical
+                c_name = str(cell_name).strip()
+                if len(c_name) >= 3:
+                    target_char = c_name[-3]
+                    return target_char.isalpha()
+                return False
+
             def determine_reason_level_3(row):
-                # If reason_level_1 is "OCE checked!", keep or respect it
                 reason_1_raw = str(row.get('Reason', '')).strip()
                 if reason_1_raw.lower() == 'oce checked!':
                     return row.get('reason_level_3', 'Cell Down')
@@ -400,9 +407,25 @@ if current_tab == "📂 Upload & Process":
                 cell_down_val = str(row.get('Cell down', '')).strip().lower()
                 power_type_val = str(row.get('power_type', '')).strip().lower()
                 resolve_val = str(row.get('Resolve', '')).strip().lower() if 'Resolve' in row else ''
+                cell_name_val = row.get('Cell name', '')
                 
                 is_excluded_alarm = "ne is disconnected." in alarm_name or "csl fault" in alarm_name
 
+                # --- 0. SMALL CELL CHECK (3rd character from last is alphabet) ---
+                if is_small_cell(cell_name_val):
+                    # Check if it's explicitly a cell down scenario or general mapping
+                    if cell_down_val == 'single' or row.get('Cell down_numeric') == 1 or not reason_1_clean:
+                        if not is_excluded_alarm:
+                            return "Small Cell Down"
+
+                # --- 1. SMART CB & MAJEURE CHECK ---
+                if "majeure" in reason_1_clean:
+                    if "smart cb" in resolve_val:
+                        return "Smart CB"
+                    else:
+                        return "Majeure cause"
+
+                # --- 2. BLANK REASON CHECK ---
                 if not reason_1_clean:
                     if cell_down_val == 'single' and not is_excluded_alarm:
                         return "Cell Down"
@@ -412,6 +435,7 @@ if current_tab == "📂 Upload & Process":
                         else:
                             return "Towerco power issue"
 
+                # --- 3. STANDARD CELL DOWN & STATION DOWN CHECKS ---
                 if cell_down_val == 'single' and not is_excluded_alarm:
                     return "Cell Down"
 
@@ -421,12 +445,7 @@ if current_tab == "📂 Upload & Process":
                     else:
                         return "Towerco power issue"
 
-                if "majeure" in reason_1_clean:
-                    if "smart cb" in resolve_val:
-                        return "Smart CB"
-                    else:
-                        return "Majeure cause"
-
+                # --- 4. CALAMITY & OTHER SPECIFIC MAPPINGS ---
                 calamity_phrases = [
                     "tco_natural calamity_cannot get to site removed because of natural calamity, security problem",
                     "natural calamity_cannot get to site because of natural calamity,security problems"
@@ -435,7 +454,6 @@ if current_tab == "📂 Upload & Process":
                     if phrase in reason_1_clean:
                         return "Flood Issue"
 
-                if "majeure impact_planned/cr" in reason_1_clean: return "Majeure cause"
                 if "loss_power_loss ac of rru extend, small cell" in reason_1_clean: return "Small Cell Down"
                 if "tco_low ac, don't charge the battery affect site/cell down" in reason_1_clean: return "Small Cell Down"
                 
@@ -479,7 +497,6 @@ if current_tab == "📂 Upload & Process":
                         
                     st.stop()
 
-            # Apply overrides from blank preview table and set Reason Level 1 to "OCE checked!"
             if st.session_state.get('blank_reviewed', False) and 'edited_blank_df' in st.session_state:
                 saved_blank = st.session_state.edited_blank_df
                 df.update(saved_blank[['reason_level_3']])
