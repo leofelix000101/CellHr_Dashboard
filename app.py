@@ -320,9 +320,6 @@ def get_tracking_data_for_cycle(selected_cycle):
     return df
 
 # ======================================================================================
-# --- ROUTE VIEWS ---
-# ======================================================================================
-
 if current_tab == "📂 Upload & Process":
     st.markdown("<h1 style='margin-bottom:0px;'>📂 Upload & Validation Pipeline</h1>", unsafe_allow_html=True)
     st.markdown("<p style='color:#64748B;'>Import daily NOC pro cell down file!</p>", unsafe_allow_html=True)
@@ -331,6 +328,11 @@ if current_tab == "📂 Upload & Process":
     uploaded_file = st.file_uploader("Upload CSV/XLSX File", type=["csv", "xlsx"])
     
     if uploaded_file:
+        if st.session_state.get('last_uploaded_file') != uploaded_file.name:
+            st.session_state.last_uploaded_file = uploaded_file.name
+            st.session_state.blank_reviewed = False
+            st.session_state.pop('edited_blank_df', None)
+
         df = pd.read_csv(uploaded_file, skiprows=2) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file, skiprows=2)
         df.columns = df.columns.str.strip()
         
@@ -388,10 +390,43 @@ if current_tab == "📂 Upload & Process":
             df[['4G_cell_hour', '2G_cell_hour', 'final_cell_hr']] = df.apply(calculate_hours, axis=1)
             
             def determine_reason_level_3(row):
+                # If reason_level_1 is "OCE checked!", keep or respect it
                 reason_1_raw = str(row.get('Reason', '')).strip()
+                if reason_1_raw.lower() == 'oce checked!':
+                    return row.get('reason_level_3', 'Cell Down')
+
                 reason_1_clean = reason_1_raw.lower().replace('nan', '')
+                alarm_name = str(row.get('Alarm name', '')).strip().lower()
+                cell_down_val = str(row.get('Cell down', '')).strip().lower()
+                power_type_val = str(row.get('power_type', '')).strip().lower()
+                resolve_val = str(row.get('Resolve', '')).strip().lower() if 'Resolve' in row else ''
                 
-                # --- FLOOD ISSUE / NATURAL CALAMITY OVERRIDE ---
+                is_excluded_alarm = "ne is disconnected." in alarm_name or "csl fault" in alarm_name
+
+                if not reason_1_clean:
+                    if cell_down_val == 'single' and not is_excluded_alarm:
+                        return "Cell Down"
+                    else:
+                        if "self power" in power_type_val:
+                            return "Mytel Power"
+                        else:
+                            return "Towerco power issue"
+
+                if cell_down_val == 'single' and not is_excluded_alarm:
+                    return "Cell Down"
+
+                if "station down" in alarm_name:
+                    if "self power" in power_type_val:
+                        return "Mytel Power"
+                    else:
+                        return "Towerco power issue"
+
+                if "majeure" in reason_1_clean:
+                    if "smart cb" in resolve_val:
+                        return "Smart CB"
+                    else:
+                        return "Majeure cause"
+
                 calamity_phrases = [
                     "tco_natural calamity_cannot get to site removed because of natural calamity, security problem",
                     "natural calamity_cannot get to site because of natural calamity,security problems"
@@ -404,18 +439,53 @@ if current_tab == "📂 Upload & Process":
                 if "loss_power_loss ac of rru extend, small cell" in reason_1_clean: return "Small Cell Down"
                 if "tco_low ac, don't charge the battery affect site/cell down" in reason_1_clean: return "Small Cell Down"
                 
-                if reason_1_clean == "":
-                    power_type_val = str(row.get('power_type', '')).strip().lower()
-                    if "self power" in power_type_val: return "Mytel Power"
-                    elif "share power" in power_type_val: return "Towerco power issue"
-                
-                if row.get('Cell down_numeric') == 1: return "Cell Down"
+                if row.get('Cell down_numeric') == 1 and not is_excluded_alarm: return "Cell Down"
                 return reason_map.get(reason_1_clean, 'Unknown')
 
             df['reason_level_3'] = df.apply(determine_reason_level_3, axis=1)
             df['End time'] = pd.to_datetime(df['End time'], errors='coerce')
             df['Date'] = df['End time'].dt.date
             
+            display_cols = ['Station standard code', 'Cell name', 'Alarm name', 'Cell down', 'Start time', 'End time', 
+                            'Duration time (hour)', 'cells_2g', 'cells_4g', 'power_type', '4G_cell_hour', '2G_cell_hour', 
+                            'final_cell_hr', 'Reason', 'reason_level_3']
+
+            # --- STEP 1: BLANK REASON SPECIALIZED PREVIEW TABLE ---
+            if 'Reason' in df.columns:
+                blank_reason_mask = df['Reason'].isna() | (df['Reason'].astype(str).str.strip() == '') | (df['Reason'].astype(str).str.lower() == 'nan')
+                
+                if blank_reason_mask.sum() > 0 and not st.session_state.get('blank_reviewed', False):
+                    st.warning(f"⚠️ **OCE WARNING: Found {blank_reason_mask.sum()} row(s) with blank/null Reason Level 1. Please override Reason Level 3 using the dropdown below!**")
+                    blank_preview_df = df[blank_reason_mask].copy()
+                    
+                    edited_blank_df = st.data_editor(
+                        blank_preview_df[display_cols],
+                        column_config={
+                            "power_type": st.column_config.TextColumn("Power Type", disabled=True),
+                            "reason_level_3": st.column_config.SelectboxColumn(
+                                "Reason Level 3 (Override)", 
+                                options=["Cell Down", "Towerco power issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power", "Flood Issue", "Smart CB"],
+                                required=True
+                            )
+                        },
+                        use_container_width=True,
+                        key="blank_reasons_oce_editor"
+                    )
+                    
+                    if st.button("🚀 Preview All Data (After Blank Reason Review)", key="btn_preview_all"):
+                        st.session_state.blank_reviewed = True
+                        st.session_state.edited_blank_df = edited_blank_df
+                        st.rerun()
+                        
+                    st.stop()
+
+            # Apply overrides from blank preview table and set Reason Level 1 to "OCE checked!"
+            if st.session_state.get('blank_reviewed', False) and 'edited_blank_df' in st.session_state:
+                saved_blank = st.session_state.edited_blank_df
+                df.update(saved_blank[['reason_level_3']])
+                df.loc[saved_blank.index, 'Reason'] = 'OCE checked!'
+
+            # --- STEP 2: MAIN PREVIEW FOR ALL DATA ---
             col1, col2 = st.columns([3, 1])
             with col1:
                 st.subheader(f"📊 Preview ({len(df)} rows uploaded)")
@@ -433,17 +503,13 @@ if current_tab == "📂 Upload & Process":
                 st.write("📅 **Daily Breakdown:**")
                 st.dataframe(date_summary, use_container_width=True)
 
-            display_cols = ['Station standard code', 'Cell name', 'Alarm name', 'Start time', 'End time', 
-                            'Duration time (hour)', 'cells_2g', 'cells_4g', 'power_type', '4G_cell_hour', '2G_cell_hour', 
-                            'final_cell_hr', 'Reason', 'reason_level_3']
-            
             edited_df = st.data_editor(
                 df[display_cols], 
                 column_config={
                     "power_type": st.column_config.TextColumn("Power Type", disabled=True),
                     "reason_level_3": st.column_config.SelectboxColumn(
                         "Reason Level 3", 
-                        options=["Cell Down", "Towerco power issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power", "Flood Issue"],
+                        options=["Cell Down", "Towerco power issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power", "Flood Issue", "Smart CB"],
                         required=True
                     )
                 }, 
@@ -451,6 +517,7 @@ if current_tab == "📂 Upload & Process":
                 key="part2_editor"
             )
             
+            # --- STEP 3: CROSSCHECK FINISHED & SAVE TO DATABASE ---
             crosscheck = st.checkbox("✅ Crosscheck Finished")
             if crosscheck:
                 st.divider()
@@ -462,6 +529,7 @@ if current_tab == "📂 Upload & Process":
                         db_df = pd.DataFrame({
                             "site_id": edited_df['Station standard code'],
                             "alarm_name": edited_df['Alarm name'],
+                            "cell_down": edited_df['Cell down'],
                             "start_time": edited_df['Start time'],
                             "end_time": edited_df['End time'],
                             "duration_all_time": edited_df['Duration time (hour)'],
@@ -491,7 +559,6 @@ if current_tab == "📂 Upload & Process":
 
                     except Exception as e: 
                         st.error(f"Error: {e}")
-
 #================================================================================================
 elif current_tab == "📈 Analytics & Trends":
     st.markdown("<h1>📈 Monthly Performance Analytics & Trends</h1>", unsafe_allow_html=True)
@@ -685,6 +752,45 @@ elif current_tab == "🔬 Site Daily Down Tracking":
             unique_dates_sorted = tracking_data.sort_values(by='end_time')['Date_Str'].unique()
             all_reasons = sorted(tracking_data['reason_level_3'].dropna().unique())
             
+            # --- GLOBAL SITE SEARCH FUNCTION ---
+            st.markdown("### 🔍 Global Site Search")
+            search_query = st.text_input("Search site across all reason groups (enter Site ID):", "", key="global_site_search_input")
+            
+            if search_query.strip():
+                searched_df = tracking_data[tracking_data['site_id'].astype(str).str.contains(search_query.strip(), case=False, na=False)].copy()
+                
+                if not searched_df.empty:
+                    # Calculate pivot and totals per reason group for the searched site
+                    search_pivot = searched_df.pivot_table(index=['reason_level_3', 'team', 'site_id'], columns='Date_Str', values='final_cell_hr', aggfunc='sum', fill_value=0.0).reindex(columns=unique_dates_sorted, fill_value=0.0)
+                    search_pivot['Times down'] = (search_pivot[unique_dates_sorted] > 0).sum(axis=1).astype(int)
+                    search_pivot['Total'] = search_pivot[unique_dates_sorted].sum(axis=1).astype(float)
+                    search_pivot['Avg'] = search_pivot['Total'] / days_passed
+                    
+                    # Compute actual percentage relative to each respective reason group's total cell hours
+                    reason_totals = tracking_data.groupby('reason_level_3')['final_cell_hr'].sum().to_dict()
+                    search_pivot_reset = search_pivot.reset_index()
+                    search_pivot_reset['%'] = search_pivot_reset.apply(
+                        lambda row: (row['Total'] / reason_totals.get(row['reason_level_3'], 1)) * 100 
+                        if reason_totals.get(row['reason_level_3'], 0) > 0 else 0.0, 
+                        axis=1
+                    )
+                    
+                    pinned_cols = ['reason_level_3', 'team', 'site_id', 'Times down', 'Avg', 'Total', '%']
+                    col_config = {
+                        "reason_level_3": st.column_config.TextColumn("Reason Level 3", width="medium", pinned=True),
+                        "team": st.column_config.TextColumn("Team", width="auto", pinned=True),
+                        "site_id": st.column_config.TextColumn("Site ID", width="small", pinned=True),
+                        "Times down": st.column_config.NumberColumn("Times down", format="%d", width="small", pinned=True),
+                        "Avg": st.column_config.NumberColumn("Avg", format="%.1f", width="small", pinned=True),
+                        "Total": st.column_config.NumberColumn("Total", format="%.1f", width="small", pinned=True),
+                        "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100, width="auto", pinned=True),
+                    }
+                    for d_col in unique_dates_sorted: col_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small", alignment="center")
+                    st.data_editor(search_pivot_reset, use_container_width=True, hide_index=True, disabled=True, column_order=pinned_cols + list(unique_dates_sorted), column_config=col_config)
+                else:
+                    st.info("No matching sites found across reason groups.")
+                st.divider()
+
             def display_pinned_table(df, unique_dates):
                 pinned_cols = ['team', 'site_id', 'Times down', 'Avg', 'Total', '%']
                 col_config = {
@@ -751,7 +857,6 @@ elif current_tab == "🔬 Site Daily Down Tracking":
                             display_pinned_table(site_pivot_clean.sort_values(by='Total', ascending=False), unique_dates_sorted)
         else:
             st.info("ℹ️ No records found for selected cycle.")
-
 #=================================================================================================
 elif current_tab == "📥 Export Data":
     st.markdown("<h1>📥 Operational Report Data Extraction</h1>", unsafe_allow_html=True)
@@ -861,13 +966,23 @@ elif current_tab == "⚠️ Error Checking":
 
             st.subheader("🔍 Identified Errors")
             def get_error_type(row):
-                r1 = str(row.get('reason_level_1', '')).lower()
+                r1_raw = str(row.get('reason_level_1', ''))
+                r1 = r1_raw.lower().strip()
                 r3 = str(row.get('reason_level_3', '')).lower().strip()
                 power = str(row.get('power_type', '')).strip()
+                alarm = str(row.get('alarm_name', '')).lower()
                 
                 # Rule 1: If reason_level_3 is blank, null, 'nan', or 'unknown', classify as an OCE Error
                 is_r3_invalid = not row.get('reason_level_3') or r3 == "" or r3 == "nan" or r3 == "unknown"
                 if is_r3_invalid:
+                    return "OCE Error"
+
+                # New OCE Error Rule: reason_level_1 is blank, alarm does NOT include NE is Disconnected or CSL Fault, and reason_level_3 is Mytel Power or Towerco Power
+                is_r1_blank = r1 == "" or r1 == "nan" or r1 == "none" or r1_raw.strip() == ""
+                is_excluded_alarm = "ne is disconnected" in alarm or "csl fault" in alarm
+                is_power_reason = r3 in ["mytel power", "towerco power issue", "towerco power"]
+                
+                if is_r1_blank and not is_excluded_alarm and is_power_reason:
                     return "OCE Error"
 
                 # Rule 2: NOC Errors based on power and reason level 1 mismatches
@@ -903,29 +1018,41 @@ elif current_tab == "⚠️ Error Checking":
             st.markdown(
                 """
                 > ⚠️ **CRITICAL NOTICE: MANUAL ERROR OVERRIDE & DATABASE CORRECTION**  
-                > Please select a specific **Operational Date** and **Reason Level 3** from the filters below to load and correct records. 
+                > Please select a specific **Operational Date**, **Reason Level 3**, or search by **Site Code** from the filters below to load and correct records. 
                 > Tables will only render upon selection to optimize performance and prevent unique constraint conflicts.
                 """, 
                 unsafe_allow_html=True
             )
             st.subheader("🛠️ Corrective Override Control Panel")
 
-            col_f1, col_f2 = st.columns(2)
+            col_f1, col_f2, col_f3 = st.columns(3)
             
             unique_dates = sorted(df['Date'].dropna().unique())
             with col_f1:
-                selected_override_date = st.selectbox("📅 Select Operational Date for Correction:", options=["-- Please Select Date --"] + [str(d) for d in unique_dates], key="override_date_select")
+                selected_override_date = st.selectbox("📅 Select Operational Date:", options=["-- All Dates --"] + [str(d) for d in unique_dates], key="override_date_select")
             
             unique_reasons = sorted(df['reason_level_3'].dropna().astype(str).unique())
             with col_f2:
-                selected_override_reason = st.selectbox("🔬 Select Reason Level 3 to Filter:", options=["-- Please Select Reason --"] + unique_reasons, key="override_reason_select")
+                selected_override_reason = st.selectbox("🔬 Select Reason Level 3:", options=["-- All Reasons --"] + unique_reasons, key="override_reason_select")
 
-            # Lazy load: Only render the editor when both filters are chosen
-            if selected_override_date != "-- Please Select Date --" and selected_override_reason != "-- Please Select Reason --":
-                filtered_override_df = df[(df['Date'].astype(str) == selected_override_date) & (df['reason_level_3'].astype(str) == selected_override_reason)].copy()
+            with col_f3:
+                search_site_code = st.text_input("🏢 Search Site Code (optional):", "", key="override_site_search")
 
+            # Filter logic: Apply filters based on selections
+            filtered_override_df = df.copy()
+            
+            if selected_override_date != "-- All Dates --":
+                filtered_override_df = filtered_override_df[filtered_override_df['Date'].astype(str) == selected_override_date]
+                
+            if selected_override_reason != "-- All Reasons --":
+                filtered_override_df = filtered_override_df[filtered_override_df['reason_level_3'].astype(str) == selected_override_reason]
+
+            if search_site_code.strip():
+                filtered_override_df = filtered_override_df[filtered_override_df['site_id'].astype(str).str.contains(search_site_code.strip(), case=False, na=False)]
+
+            # Check if any filter or search has been applied to render the editor
+            if selected_override_date != "-- All Dates --" or selected_override_reason != "-- All Reasons --" or search_site_code.strip():
                 if not filtered_override_df.empty:
-                    # Keep track of the original reason level 3 values to prevent unique constraint violations during update
                     filtered_override_df['original_reason_level_3'] = filtered_override_df['reason_level_3']
                     
                     st.write(f"Showing **{len(filtered_override_df)}** filtered records available for correction:")
@@ -965,11 +1092,9 @@ elif current_tab == "⚠️ Error Checking":
                                     new_val = row['reason_level_3']
                                     orig_val = row['original_reason_level_3']
                                     
-                                    # If the user didn't actually change anything for this row, skip it
                                     if new_val == orig_val:
                                         continue
 
-                                    # 1. Check if a row with the target 'new_reason' already exists to avoid unique violation crash
                                     check_stmt = text("""
                                         SELECT 1 FROM total_cell_down 
                                         WHERE site_id = :s_id 
@@ -989,7 +1114,6 @@ elif current_tab == "⚠️ Error Checking":
                                     }).fetchone()
 
                                     if exists:
-                                        # If the target record already exists, delete the old conflicting record
                                         del_stmt = text("""
                                             DELETE FROM total_cell_down 
                                             WHERE site_id = :s_id 
@@ -1008,7 +1132,6 @@ elif current_tab == "⚠️ Error Checking":
                                             "r1": row['reason_level_1']
                                         })
                                     else:
-                                        # Safe to perform standard update since no duplicate collision exists
                                         update_stmt = text("""
                                             UPDATE total_cell_down 
                                             SET reason_level_3 = :new_reason 
@@ -1031,19 +1154,18 @@ elif current_tab == "⚠️ Error Checking":
                                     update_count += 1
 
                             st.cache_data.clear()
-                            
-                            # Store success message in session state so it survives the rerun and displays correctly
                             st.session_state["override_success_msg"] = f"✅ Successfully updated {update_count} records in the database with the new Reason Level 3 overrides!"
                             st.rerun()
 
                         except Exception as e:
                             st.error(f"⚠️ Database Update Error: {e}")
                 else:
-                    st.info("ℹ️ No records match your selected date and reason criteria.")
+                    st.info("ℹ️ No records match your selected date, reason, or site code search criteria.")
             else:
-                st.info("👆 Please select both a specific **Operational Date** and a **Reason Level 3** from the dropdown menus above to load and edit records.")
+                st.info("👆 Please select an **Operational Date**, a **Reason Level 3**, or type a **Site Code** in the search box above to load and edit records.")
         else:
             st.info("No data available for selected cycle.")
+#===========================================================
 
 elif current_tab == "🏆 Team Performance":
     st.markdown("<h1>🏆 Team Performance Dashboard</h1>", unsafe_allow_html=True)
