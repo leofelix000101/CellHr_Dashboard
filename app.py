@@ -619,6 +619,18 @@ elif current_tab == "📈 Analytics & Trends":
                 if selected_summary_cycles:
                     curr_df = df[df['cycle_name'].isin(selected_summary_cycles)].copy()
                     if not curr_df.empty:
+                        # --- NEW: Reason Category Filter Multi-Select ---
+                        all_available_reasons = sorted(curr_df['reason_level_3'].dropna().unique().tolist())
+                        selected_reasons_cycle = st.multiselect(
+                            "🔍 Filter / Hide Reason Categories (Cycle Summary):",
+                            options=all_available_reasons,
+                            default=all_available_reasons,
+                            key="cycle_summary_reason_filter"
+                        )
+                        
+                        if selected_reasons_cycle:
+                            curr_df = curr_df[curr_df['reason_level_3'].isin(selected_reasons_cycle)]
+
                         date_mapping = {}
                         for _, r in curr_df[['plot_day', 'dt_obj']].drop_duplicates().iterrows():
                             if pd.notna(r['dt_obj']): date_mapping[r['plot_day']] = r['dt_obj'].strftime('%b-%d')
@@ -653,8 +665,22 @@ elif current_tab == "📈 Analytics & Trends":
                 max_available_date = pd.to_datetime(df['end_time']).dt.date.max()
                 default_date = max_available_date if pd.notna(max_available_date) else datetime.now().date()
                 selected_summary_date = st.date_input("Select Operational Date:", value=default_date, key="daily_summary_date_picker")
+                
+                # --- MOVED: Reason Category Filter Multi-Select placed right below Operational Date ---
+                all_daily_reasons_global = sorted(df['reason_level_3'].dropna().unique().tolist())
+                selected_daily_reasons = st.multiselect(
+                    "🔍 Filter / Hide Reason Categories (Daily Summary):",
+                    options=all_daily_reasons_global,
+                    default=all_daily_reasons_global,
+                    key="daily_summary_reason_filter"
+                )
+
+                # Filter target date dataframe based on selected date AND selected reasons
                 target_date_df = df[pd.to_datetime(df['end_time']).dt.date == selected_summary_date].copy()
                 
+                if selected_daily_reasons and not target_date_df.empty:
+                    target_date_df = target_date_df[target_date_df['reason_level_3'].isin(selected_daily_reasons)]
+
                 target_noc_df, target_oce_df = pd.DataFrame(), pd.DataFrame()
                 if not df.empty:                
                     def get_error_type(row):
@@ -690,7 +716,7 @@ elif current_tab == "📈 Analytics & Trends":
                             "Daily Percent (%)": st.column_config.ProgressColumn("Daily (%)", format="%.1f%%", min_value=0, max_value=100, width="medium"),
                         })
                     else:
-                        st.info(f"No operational downtime recorded for {selected_summary_date.strftime('%d %b %Y')}.")
+                        st.info(f"No operational downtime recorded or matching selected filters for {selected_summary_date.strftime('%d %b %Y')}.")
 
                 with col_alarms:
                     st.markdown(f"#### Operation Exceptions ({selected_summary_date.strftime('%d %b %Y')})")
