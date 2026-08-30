@@ -398,6 +398,11 @@ if current_tab == "📂 Upload & Process":
                 return False
 
             def determine_reason_level_3(row):
+                # Prioritize Unsafe if site_master indicates Unsafe
+                unsafe_val = str(row.get('unsafe', row.get('Unsafe', ''))).strip().lower()
+                if unsafe_val == 'unsafe':
+                    return "Unsafe"
+
                 reason_1_raw = str(row.get('Reason', '')).strip()
                 if reason_1_raw.lower() == 'oce checked!':
                     return row.get('reason_level_3', 'Cell Down')
@@ -482,7 +487,7 @@ if current_tab == "📂 Upload & Process":
                             "power_type": st.column_config.TextColumn("Power Type", disabled=True),
                             "reason_level_3": st.column_config.SelectboxColumn(
                                 "Reason Level 3 (Override)", 
-                                options=["Cell Down", "Towerco power issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power", "Flood Issue", "Smart CB"],
+                                options=["Cell Down", "Towerco power issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power", "Flood Issue", "Smart CB", "Unsafe"],
                                 required=True
                             )
                         },
@@ -526,7 +531,7 @@ if current_tab == "📂 Upload & Process":
                     "power_type": st.column_config.TextColumn("Power Type", disabled=True),
                     "reason_level_3": st.column_config.SelectboxColumn(
                         "Reason Level 3", 
-                        options=["Cell Down", "Towerco power issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power", "Flood Issue", "Smart CB"],
+                        options=["Cell Down", "Towerco power issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power", "Flood Issue", "Smart CB", "Unsafe"],
                         required=True
                     )
                 }, 
@@ -1087,7 +1092,7 @@ elif current_tab == "⚠️ Error Checking":
                             "original_reason_level_3": st.column_config.TextColumn("Original Reason Level 3", disabled=True),
                             "reason_level_3": st.column_config.SelectboxColumn(
                                 "Reason Level 3 (Editable Override)", 
-                                options=["Cell Down", "Towerco power issue", "Flood Issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power", "Unknown"],
+                                options=["Cell Down", "Towerco power issue", "Flood Issue", "Small Cell Down", "Transmission", "Operation", "Majeure cause", "Power down at HUB site", "Mytel Power", "Unknown", "Unsafe"],
                                 required=True
                             ),
                             "final_cell_hr": st.column_config.NumberColumn("Cell HR", disabled=True, format="%.2f"),
