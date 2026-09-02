@@ -390,7 +390,6 @@ if current_tab == "📂 Upload & Process":
             df[['4G_cell_hour', '2G_cell_hour', 'final_cell_hr']] = df.apply(calculate_hours, axis=1)
             
             def is_small_cell(cell_name):
-                # Check if cell name has at least 3 characters from the end and that 3rd character from last is alphabetical
                 c_name = str(cell_name).strip()
                 if len(c_name) >= 3:
                     target_char = c_name[-3]
@@ -398,7 +397,6 @@ if current_tab == "📂 Upload & Process":
                 return False
 
             def determine_reason_level_3(row):
-                # Prioritize Unsafe if site_master indicates Unsafe
                 unsafe_val = str(row.get('unsafe', row.get('Unsafe', ''))).strip().lower()
                 if unsafe_val == 'unsafe':
                     return "Unsafe"
@@ -416,21 +414,17 @@ if current_tab == "📂 Upload & Process":
                 
                 is_excluded_alarm = "ne is disconnected." in alarm_name or "csl fault" in alarm_name
 
-                # --- 0. SMALL CELL CHECK (3rd character from last is alphabet) ---
                 if is_small_cell(cell_name_val):
-                    # Check if it's explicitly a cell down scenario or general mapping
                     if cell_down_val == 'single' or row.get('Cell down_numeric') == 1 or not reason_1_clean:
                         if not is_excluded_alarm:
                             return "Small Cell Down"
 
-                # --- 1. SMART CB & MAJEURE CHECK ---
                 if "majeure" in reason_1_clean:
                     if "smart cb" in resolve_val:
                         return "Smart CB"
                     else:
                         return "Majeure cause"
 
-                # --- 2. BLANK REASON CHECK ---
                 if not reason_1_clean:
                     if cell_down_val == 'single' and not is_excluded_alarm:
                         return "Cell Down"
@@ -440,7 +434,6 @@ if current_tab == "📂 Upload & Process":
                         else:
                             return "Towerco power issue"
 
-                # --- 3. STANDARD CELL DOWN & STATION DOWN CHECKS ---
                 if cell_down_val == 'single' and not is_excluded_alarm:
                     return "Cell Down"
 
@@ -450,7 +443,6 @@ if current_tab == "📂 Upload & Process":
                     else:
                         return "Towerco power issue"
 
-                # --- 4. CALAMITY & OTHER SPECIFIC MAPPINGS ---
                 calamity_phrases = [
                     "tco_natural calamity_cannot get to site removed because of natural calamity, security problem",
                     "natural calamity_cannot get to site because of natural calamity,security problems"
@@ -473,7 +465,6 @@ if current_tab == "📂 Upload & Process":
                             'Duration time (hour)', 'cells_2g', 'cells_4g', 'power_type', '4G_cell_hour', '2G_cell_hour', 
                             'final_cell_hr', 'Reason', 'reason_level_3']
 
-            # --- STEP 1: BLANK REASON SPECIALIZED PREVIEW TABLE ---
             if 'Reason' in df.columns:
                 blank_reason_mask = df['Reason'].isna() | (df['Reason'].astype(str).str.strip() == '') | (df['Reason'].astype(str).str.lower() == 'nan')
                 
@@ -507,7 +498,6 @@ if current_tab == "📂 Upload & Process":
                 df.update(saved_blank[['reason_level_3']])
                 df.loc[saved_blank.index, 'Reason'] = 'OCE checked!'
 
-            # --- STEP 2: MAIN PREVIEW FOR ALL DATA ---
             col1, col2 = st.columns([3, 1])
             with col1:
                 st.subheader(f"📊 Preview ({len(df)} rows uploaded)")
@@ -539,7 +529,6 @@ if current_tab == "📂 Upload & Process":
                 key="part2_editor"
             )
             
-            # --- STEP 3: CROSSCHECK FINISHED & SAVE TO DATABASE ---
             crosscheck = st.checkbox("✅ Crosscheck Finished")
             if crosscheck:
                 st.divider()
@@ -619,7 +608,6 @@ elif current_tab == "📈 Analytics & Trends":
                 if selected_summary_cycles:
                     curr_df = df[df['cycle_name'].isin(selected_summary_cycles)].copy()
                     if not curr_df.empty:
-                        # --- NEW: Reason Category Filter Multi-Select ---
                         all_available_reasons = sorted(curr_df['reason_level_3'].dropna().unique().tolist())
                         selected_reasons_cycle = st.multiselect(
                             "🔍 Filter / Hide Reason Categories (Cycle Summary):",
@@ -666,7 +654,6 @@ elif current_tab == "📈 Analytics & Trends":
                 default_date = max_available_date if pd.notna(max_available_date) else datetime.now().date()
                 selected_summary_date = st.date_input("Select Operational Date:", value=default_date, key="daily_summary_date_picker")
                 
-                # --- MOVED: Reason Category Filter Multi-Select placed right below Operational Date ---
                 all_daily_reasons_global = sorted(df['reason_level_3'].dropna().unique().tolist())
                 selected_daily_reasons = st.multiselect(
                     "🔍 Filter / Hide Reason Categories (Daily Summary):",
@@ -675,7 +662,6 @@ elif current_tab == "📈 Analytics & Trends":
                     key="daily_summary_reason_filter"
                 )
 
-                # Filter target date dataframe based on selected date AND selected reasons
                 target_date_df = df[pd.to_datetime(df['end_time']).dt.date == selected_summary_date].copy()
                 
                 if selected_daily_reasons and not target_date_df.empty:
@@ -800,7 +786,7 @@ elif current_tab == "🔬 Site Daily Down Tracking":
             unique_dates_sorted = tracking_data.sort_values(by='end_time')['Date_Str'].unique()
             all_reasons = sorted(tracking_data['reason_level_3'].dropna().unique())
             
-            # --- GLOBAL SITE SEARCH FUNCTION ---
+            # --- GLOBAL SITE SEARCH FUNCTION (WITH MULTI-DATE MULTI-BUCKET + TOTAL COLUMNS) ---
             st.markdown("### 🔍 Global Site Search")
             search_query = st.text_input("Search site across all reason groups (enter Site ID):", "", key="global_site_search_input")
             
@@ -808,49 +794,124 @@ elif current_tab == "🔬 Site Daily Down Tracking":
                 searched_df = tracking_data[tracking_data['site_id'].astype(str).str.contains(search_query.strip(), case=False, na=False)].copy()
                 
                 if not searched_df.empty:
-                    # Calculate pivot and totals per reason group for the searched site
-                    search_pivot = searched_df.pivot_table(index=['reason_level_3', 'team', 'site_id'], columns='Date_Str', values='final_cell_hr', aggfunc='sum', fill_value=0.0).reindex(columns=unique_dates_sorted, fill_value=0.0)
-                    search_pivot['Times down'] = (search_pivot[unique_dates_sorted] > 0).sum(axis=1).astype(int)
-                    search_pivot['Total'] = search_pivot[unique_dates_sorted].sum(axis=1).astype(float)
-                    search_pivot['Avg'] = search_pivot['Total'] / days_passed
+                    searched_df['Date_Str'] = searched_df['end_time'].dt.strftime('%d-%b')
                     
-                    # Compute actual percentage relative to each respective reason group's total cell hours
-                    reason_totals = tracking_data.groupby('reason_level_3')['final_cell_hr'].sum().to_dict()
-                    search_pivot_reset = search_pivot.reset_index()
-                    search_pivot_reset['%'] = search_pivot_reset.apply(
-                        lambda row: (row['Total'] / reason_totals.get(row['reason_level_3'], 1)) * 100 
-                        if reason_totals.get(row['reason_level_3'], 0) > 0 else 0.0, 
-                        axis=1
-                    )
+                    tb_search_df = get_time_buckets_for_cycles([selected_cycle_name])
+                    if not tb_search_df.empty:
+                        tb_search_df = tb_search_df[tb_search_df['Site ID'].astype(str).str.contains(search_query.strip(), case=False, na=False)].copy()
                     
-                    pinned_cols = ['reason_level_3', 'team', 'site_id', 'Times down', 'Avg', 'Total', '%']
-                    col_config = {
-                        "reason_level_3": st.column_config.TextColumn("Reason Level 3", width="medium", pinned=True),
-                        "team": st.column_config.TextColumn("Team", width="auto", pinned=True),
-                        "site_id": st.column_config.TextColumn("Site ID", width="small", pinned=True),
-                        "Times down": st.column_config.NumberColumn("Times down", format="%d", width="small", pinned=True),
-                        "Avg": st.column_config.NumberColumn("Avg", format="%.1f", width="small", pinned=True),
-                        "Total": st.column_config.NumberColumn("Total", format="%.1f", width="small", pinned=True),
-                        "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100, width="auto", pinned=True),
-                    }
-                    for d_col in unique_dates_sorted: col_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small", alignment="center")
-                    st.data_editor(search_pivot_reset, use_container_width=True, hide_index=True, disabled=True, column_order=pinned_cols + list(unique_dates_sorted), column_config=col_config)
+                    if not tb_search_df.empty:
+                        tb_search_df['Date_Str'] = pd.to_datetime(tb_search_df['end_time']).dt.strftime('%d-%b')
+                        
+                        search_pivot = tb_search_df.pivot_table(
+                            index=['Reason level 3', 'Teams', 'Site ID'], 
+                            columns=['Date_Str', 'Bucket'], 
+                            values='Total Cell Hour', 
+                            aggfunc='sum', 
+                            fill_value=0.0
+                        )
+                        
+                        expected_buckets = ['Day', 'Night', 'Midnight']
+                        multi_cols = pd.MultiIndex.from_product([unique_dates_sorted, expected_buckets], names=['Date', 'Bucket'])
+                        search_pivot = search_pivot.reindex(columns=multi_cols, fill_value=0.0)
+                        
+                        search_pivot_reset = search_pivot.reset_index()
+                        search_pivot_reset.columns = [col[0] if col[1] == '' else f"{col[0]}_{col[1]}" for col in search_pivot_reset.columns.values]
+                        
+                        search_pivot_reset = search_pivot_reset.rename(columns={
+                            'Reason level 3': 'reason_level_3',
+                            'Teams': 'team',
+                            'Site ID': 'site_id'
+                        })
+                        
+                        for d_str in unique_dates_sorted:
+                            day_cols = [f"{d_str}_Day", f"{d_str}_Night", f"{d_str}_Midnight"]
+                            existing_day_cols = [c for c in day_cols if c in search_pivot_reset.columns]
+                            search_pivot_reset[f"{d_str}_Total"] = search_pivot_reset[existing_day_cols].sum(axis=1)
+
+                        date_bucket_col_names = []
+                        for d_str in unique_dates_sorted:
+                            date_bucket_col_names.append(f"{d_str}_Total")
+                            date_bucket_col_names.extend([f"{d_str}_Day", f"{d_str}_Night", f"{d_str}_Midnight"])
+
+                        search_pivot_reset['Times down'] = (search_pivot_reset[[f"{d_str}_Total" for d_str in unique_dates_sorted]] > 0).sum(axis=1).astype(int)
+                        search_pivot_reset['Total'] = search_pivot_reset[[f"{d_str}_Total" for d_str in unique_dates_sorted]].sum(axis=1).astype(float)
+                        search_pivot_reset['Avg'] = search_pivot_reset['Total'] / days_passed
+                        
+                        reason_totals = tracking_data.groupby('reason_level_3')['final_cell_hr'].sum().to_dict()
+                        search_pivot_reset['%'] = search_pivot_reset.apply(
+                            lambda row: (row['Total'] / reason_totals.get(row['reason_level_3'], 1)) * 100 
+                            if reason_totals.get(row['reason_level_3'], 0) > 0 else 0.0, 
+                            axis=1
+                        )
+                        
+                        pinned_cols = ['reason_level_3', 'team', 'site_id', 'Times down', 'Avg', 'Total', '%']
+                        col_config = {
+                            "reason_level_3": st.column_config.TextColumn("Reason Level 3", width="medium", pinned=True),
+                            "team": st.column_config.TextColumn("Team", width="auto", pinned=True),
+                            "site_id": st.column_config.TextColumn("Site ID", width="small", pinned=True),
+                            "Times down": st.column_config.NumberColumn("Times down", format="%d", width="small", pinned=True),
+                            "Avg": st.column_config.NumberColumn("Avg", format="%.1f", width="small", pinned=True),
+                            "Total": st.column_config.NumberColumn("Total", format="%.1f", width="small", pinned=True),
+                            "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100, width="auto", pinned=True),
+                        }
+                        for col_name in date_bucket_col_names:
+                            if col_name.endswith("_Total"):
+                                col_config[col_name] = st.column_config.NumberColumn(col_name, format="%.1f", width="small", alignment="center", help="Total for Date")
+                            else:
+                                col_config[col_name] = st.column_config.NumberColumn(col_name, format="%.1f", width="small", alignment="center")
+                            
+                        st.data_editor(search_pivot_reset, use_container_width=True, hide_index=True, disabled=True, column_order=pinned_cols + date_bucket_col_names, column_config=col_config)
+                    else:
+                        search_pivot = searched_df.pivot_table(index=['reason_level_3', 'team', 'site_id'], columns='Date_Str', values='final_cell_hr', aggfunc='sum', fill_value=0.0).reindex(columns=unique_dates_sorted, fill_value=0.0)
+                        search_pivot['Times down'] = (search_pivot[unique_dates_sorted] > 0).sum(axis=1).astype(int)
+                        search_pivot['Total'] = search_pivot[unique_dates_sorted].sum(axis=1).astype(float)
+                        search_pivot['Avg'] = search_pivot['Total'] / days_passed
+                        
+                        reason_totals = tracking_data.groupby('reason_level_3')['final_cell_hr'].sum().to_dict()
+                        search_pivot_reset = search_pivot.reset_index()
+                        search_pivot_reset['%'] = search_pivot_reset.apply(
+                            lambda row: (row['Total'] / reason_totals.get(row['reason_level_3'], 1)) * 100 
+                            if reason_totals.get(row['reason_level_3'], 0) > 0 else 0.0, 
+                            axis=1
+                        )
+                        
+                        pinned_cols = ['reason_level_3', 'team', 'site_id', 'Times down', 'Avg', 'Total', '%']
+                        col_config = {
+                            "reason_level_3": st.column_config.TextColumn("Reason Level 3", width="medium", pinned=True),
+                            "team": st.column_config.TextColumn("Team", width="auto", pinned=True),
+                            "site_id": st.column_config.TextColumn("Site ID", width="small", pinned=True),
+                            "Times down": st.column_config.NumberColumn("Times down", format="%d", width="small", pinned=True),
+                            "Avg": st.column_config.NumberColumn("Avg", format="%.1f", width="small", pinned=True),
+                            "Total": st.column_config.NumberColumn("Total", format="%.1f", width="small", pinned=True),
+                            "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100, width="auto", pinned=True),
+                        }
+                        for d_col in unique_dates_sorted: col_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small", alignment="center")
+                        st.data_editor(search_pivot_reset, use_container_width=True, hide_index=True, disabled=True, column_order=pinned_cols + list(unique_dates_sorted), column_config=col_config)
                 else:
                     st.info("No matching sites found across reason groups.")
                 st.divider()
 
-            def display_pinned_table(df, unique_dates):
+            def display_pinned_table_with_buckets(df, date_bucket_col_names):
                 pinned_cols = ['team', 'site_id', 'Times down', 'Avg', 'Total', '%']
                 col_config = {
-                        "team": st.column_config.TextColumn("Team", width="auto", pinned=True),
-                        "site_id": st.column_config.TextColumn("Site ID", width="small", pinned=True),
-                        "Times down": st.column_config.NumberColumn("Times down", format="%d", width="small", pinned=True),
-                        "Avg": st.column_config.NumberColumn("Avg", format="%.1f", width="small", pinned=True),
-                        "Total": st.column_config.NumberColumn("Total", format="%.1f", width="small", pinned=True),
-                        "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100, width="auto", pinned=True),
+                    "team": st.column_config.TextColumn("Team", width="auto", pinned=True),
+                    "site_id": st.column_config.TextColumn("Site ID", width="small", pinned=True),
+                    "Times down": st.column_config.NumberColumn("Times down", format="%d", width="small", pinned=True),
+                    "Avg": st.column_config.NumberColumn("Avg", format="%.1f", width="small", pinned=True),
+                    "Total": st.column_config.NumberColumn("Total", format="%.1f", width="small", pinned=True),
+                    "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100, width="auto", pinned=True),
                 }
-                for d_col in unique_dates: col_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small", alignment="center")
-                st.data_editor(df, use_container_width=True, hide_index=True, disabled=True, column_order=pinned_cols + list(unique_dates), column_config=col_config)
+                for c in date_bucket_col_names:
+                    if c.endswith("_Total"):
+                        col_config[c] = st.column_config.NumberColumn(c, format="%.1f", width="small", alignment="center")
+                    else:
+                        col_config[c] = st.column_config.NumberColumn(c, format="%.1f", width="small", alignment="center")
+                st.data_editor(df, use_container_width=True, hide_index=True, disabled=True, column_order=pinned_cols + date_bucket_col_names, column_config=col_config)
+
+            cycle_tb_df = get_time_buckets_for_cycles([selected_cycle_name])
+            if not cycle_tb_df.empty:
+                cycle_tb_df['Date_Str'] = pd.to_datetime(cycle_tb_df['end_time']).dt.strftime('%d-%b')
 
             for reason in all_reasons:
                 reason_filtered_df = tracking_data[tracking_data['reason_level_3'] == reason].copy()
@@ -881,15 +942,90 @@ elif current_tab == "🔬 Site Daily Down Tracking":
                             owner_total = owner_df['final_cell_hr'].sum()
                             st.markdown(f"#### 🏢 **Towerco: {owner}** | Sites: {owner_df['site_id'].nunique()} | Total: {owner_total:,.1f} Cell*HR")
                             
+                            if not cycle_tb_df.empty:
+                                owner_sites = owner_df['site_id'].unique()
+                                sub_tb = cycle_tb_df[cycle_tb_df['Site ID'].isin(owner_sites)]
+                                if not sub_tb.empty:
+                                    site_pivot = sub_tb.pivot_table(index=['Teams', 'Site ID'], columns=['Date_Str', 'Bucket'], values='Total Cell Hour', aggfunc='sum', fill_value=0.0)
+                                    expected_buckets = ['Day', 'Night', 'Midnight']
+                                    multi_cols = pd.MultiIndex.from_product([unique_dates_sorted, expected_buckets], names=['Date', 'Bucket'])
+                                    site_pivot = site_pivot.reindex(columns=multi_cols, fill_value=0.0)
+                                    site_pivot_reset = site_pivot.reset_index()
+                                    site_pivot_reset.columns = [col[0] if col[1] == '' else f"{col[0]}_{col[1]}" for col in site_pivot_reset.columns.values]
+                                    site_pivot_reset = site_pivot_reset.rename(columns={'Teams': 'team', 'Site ID': 'site_id'})
+                                    
+                                    for d_str in unique_dates_sorted:
+                                        day_cols = [f"{d_str}_Day", f"{d_str}_Night", f"{d_str}_Midnight"]
+                                        existing_day_cols = [c for c in day_cols if c in site_pivot_reset.columns]
+                                        site_pivot_reset[f"{d_str}_Total"] = site_pivot_reset[existing_day_cols].sum(axis=1)
+
+                                    date_bucket_col_names = []
+                                    for d_str in unique_dates_sorted:
+                                        date_bucket_col_names.append(f"{d_str}_Total")
+                                        date_bucket_col_names.extend([f"{d_str}_Day", f"{d_str}_Night", f"{d_str}_Midnight"])
+
+                                    site_pivot_reset['Total'] = site_pivot_reset[[f"{d_str}_Total" for d_str in unique_dates_sorted]].sum(axis=1)
+                                    site_pivot_reset['Times down'] = (site_pivot_reset[[f"{d_str}_Total" for d_str in unique_dates_sorted]] > 0).sum(axis=1)
+                                    site_pivot_reset['Avg'] = site_pivot_reset['Total'] / days_passed
+                                    site_pivot_reset['%'] = (site_pivot_reset['Total'] / owner_total) * 100 if owner_total > 0 else 0
+                                    
+                                    display_pinned_table_with_buckets(site_pivot_reset.sort_values(by='Total', ascending=False), date_bucket_col_names)
+                                    continue
+
                             site_pivot = owner_df.pivot_table(index=['team', 'site_id'], columns='Date_Str', values='final_cell_hr', aggfunc='sum', fill_value=0.0).reindex(columns=unique_dates_sorted, fill_value=0.0)
                             site_pivot['Total'] = site_pivot[unique_dates_sorted].sum(axis=1)
                             site_pivot['Times down'] = (site_pivot[unique_dates_sorted] > 0).sum(axis=1)
                             site_pivot['Avg'] = site_pivot['Total'] / days_passed 
                             site_pivot['%'] = (site_pivot['Total'] / owner_total) * 100 if owner_total > 0 else 0
                             
-                            display_pinned_table(site_pivot.reset_index().sort_values(by='Total', ascending=False), unique_dates_sorted)
+                            pinned_cols = ['team', 'site_id', 'Times down', 'Avg', 'Total', '%']
+                            col_config = {
+                                "team": st.column_config.TextColumn("Team", width="auto", pinned=True),
+                                "site_id": st.column_config.TextColumn("Site ID", width="small", pinned=True),
+                                "Times down": st.column_config.NumberColumn("Times down", format="%d", width="small", pinned=True),
+                                "Avg": st.column_config.NumberColumn("Avg", format="%.1f", width="small", pinned=True),
+                                "Total": st.column_config.NumberColumn("Total", format="%.1f", width="small", pinned=True),
+                                "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100, width="auto", pinned=True),
+                            }
+                            for d_col in unique_dates_sorted: col_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small", alignment="center")
+                            st.data_editor(site_pivot.reset_index().sort_values(by='Total', ascending=False), use_container_width=True, hide_index=True, disabled=True, column_order=pinned_cols + list(unique_dates_sorted), column_config=col_config)
                     
                     else:
+                        st.write("---")
+                        st.markdown(f"### 📊 Grid Matrix: **{reason}** <span style='color:#FF4B4B;'>(Total: {reason_total_hours:,.1f} Cell*HR)</span>", unsafe_allow_html=True)
+                        
+                        if not cycle_tb_df.empty:
+                            reason_sites = reason_filtered_df['site_id'].unique()
+                            sub_tb = cycle_tb_df[(cycle_tb_df['Site ID'].isin(reason_sites)) & (cycle_tb_df['Reason level 3'] == reason)]
+                            if not sub_tb.empty:
+                                site_pivot = sub_tb.pivot_table(index=['Teams', 'Site ID'], columns=['Date_Str', 'Bucket'], values='Total Cell Hour', aggfunc='sum', fill_value=0.0)
+                                expected_buckets = ['Day', 'Night', 'Midnight']
+                                multi_cols = pd.MultiIndex.from_product([unique_dates_sorted, expected_buckets], names=['Date', 'Bucket'])
+                                site_pivot = site_pivot.reindex(columns=multi_cols, fill_value=0.0)
+                                site_pivot_reset = site_pivot.reset_index()
+                                site_pivot_reset.columns = [col[0] if col[1] == '' else f"{col[0]}_{col[1]}" for col in site_pivot_reset.columns.values]
+                                site_pivot_reset = site_pivot_reset.rename(columns={'Teams': 'team', 'Site ID': 'site_id'})
+                                
+                                for d_str in unique_dates_sorted:
+                                    day_cols = [f"{d_str}_Day", f"{d_str}_Night", f"{d_str}_Midnight"]
+                                    existing_day_cols = [c for c in day_cols if c in site_pivot_reset.columns]
+                                    site_pivot_reset[f"{d_str}_Total"] = site_pivot_reset[existing_day_cols].sum(axis=1)
+
+                                date_bucket_col_names = []
+                                for d_str in unique_dates_sorted:
+                                    date_bucket_col_names.append(f"{d_str}_Total")
+                                    date_bucket_col_names.extend([f"{d_str}_Day", f"{d_str}_Night", f"{d_str}_Midnight"])
+
+                                site_pivot_reset['Total'] = site_pivot_reset[[f"{d_str}_Total" for d_str in unique_dates_sorted]].sum(axis=1)
+                                site_pivot_reset['Times down'] = (site_pivot_reset[[f"{d_str}_Total" for d_str in unique_dates_sorted]] > 0).sum(axis=1)
+                                site_pivot_reset['Avg'] = site_pivot_reset['Total'] / days_passed
+                                site_pivot_reset['%'] = (site_pivot_reset['Total'] / reason_total_hours) * 100 if reason_total_hours > 0 else 0
+                                
+                                site_pivot_clean = site_pivot_reset[site_pivot_reset['Times down'] > 0]
+                                if not site_pivot_clean.empty:
+                                    display_pinned_table_with_buckets(site_pivot_clean.sort_values(by='Total', ascending=False), date_bucket_col_names)
+                                continue
+
                         site_pivot = reason_filtered_df.pivot_table(index=['team', 'site_id'], columns='Date_Str', values='final_cell_hr', aggfunc='sum', fill_value=0.0).reindex(columns=unique_dates_sorted, fill_value=0.0)
                         site_pivot['Times down'] = (site_pivot[unique_dates_sorted] > 0).sum(axis=1).astype(int)
                         site_pivot['Total'] = site_pivot[unique_dates_sorted].sum(axis=1).astype(float)
@@ -899,17 +1035,25 @@ elif current_tab == "🔬 Site Daily Down Tracking":
                         site_pivot_clean = site_pivot.reset_index()
                         site_pivot_clean = site_pivot_clean[site_pivot_clean['Times down'] > 0]
                         
-                        st.write("---")
-                        st.markdown(f"### 📊 Grid Matrix: **{reason}** <span style='color:#FF4B4B;'>(Sites: {site_pivot_clean['site_id'].nunique()} | Total: {reason_total_hours:,.1f} Cell*HR)</span>", unsafe_allow_html=True)
                         if not site_pivot_clean.empty:
-                            display_pinned_table(site_pivot_clean.sort_values(by='Total', ascending=False), unique_dates_sorted)
+                            pinned_cols = ['team', 'site_id', 'Times down', 'Avg', 'Total', '%']
+                            col_config = {
+                                "team": st.column_config.TextColumn("Team", width="auto", pinned=True),
+                                "site_id": st.column_config.TextColumn("Site ID", width="small", pinned=True),
+                                "Times down": st.column_config.NumberColumn("Times down", format="%d", width="small", pinned=True),
+                                "Avg": st.column_config.NumberColumn("Avg", format="%.1f", width="small", pinned=True),
+                                "Total": st.column_config.NumberColumn("Total", format="%.1f", width="small", pinned=True),
+                                "%": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100, width="auto", pinned=True),
+                            }
+                            for d_col in unique_dates_sorted: col_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small", alignment="center")
+                            st.data_editor(site_pivot_clean.sort_values(by='Total', ascending=False), use_container_width=True, hide_index=True, disabled=True, column_order=pinned_cols + list(unique_dates_sorted), column_config=col_config)
         else:
             st.info("ℹ️ No records found for selected cycle.")
 #=================================================================================================
 elif current_tab == "📥 Export Data":
     st.markdown("<h1>📥 Operational Report Data Extraction</h1>", unsafe_allow_html=True)
     st.divider()
-    st.write("Select a date range and a specific downtime reason to extract a custom Excel report.")
+    st.write("Select a date range and a specific downtime reason to extract a custom Excel report containing Day, Night, Mid Night distribution and Final Cell Hr.")
     
     col_d1, col_d2, col_r = st.columns(3)
     with col_d1: start_date = st.date_input("🗓️ Start Date", value=datetime.now().date() - timedelta(days=30), key="export_start_date")
@@ -922,45 +1066,113 @@ elif current_tab == "📥 Export Data":
     if st.button("🔍 Generate Excel Report", key="generate_excel_btn"):
         if selected_reason == "All Reasons":
             export_query = """
-                SELECT site_id AS "Site Code", alarm_name AS "Alarm Name/Cell ID", start_time AS "Start Time", end_time AS "End Time",
-                       reason_level_1 AS "Reason Level 1", reason_level_3 AS "Reason Level 3", final_cell_hr AS "Total Cell Hour"
-                FROM total_cell_down WHERE end_time::date >= :start_date AND end_time::date <= :end_date ORDER BY end_time DESC
+                SELECT t.site_id AS "Site Code", t.alarm_name AS "Alarm Name/Cell ID", t.start_time AS "Start Time", t.end_time AS "End Time",
+                       t.reason_level_1 AS "Reason Level 1", t.reason_level_3 AS "Reason Level 3", t.final_cell_hr AS "Final Cell Hr",
+                       m.fot_teams AS "Team"
+                FROM total_cell_down t
+                LEFT JOIN site_master m ON t.site_id = m.site_id
+                WHERE t.end_time::date >= :start_date AND t.end_time::date <= :end_date 
+                ORDER BY t.end_time DESC
             """
             export_df = conn.query(export_query, params={"start_date": start_date, "end_date": end_date}, ttl="1m")
         else:
             export_query = """
-                SELECT site_id AS "Site Code", alarm_name AS "Alarm Name/Cell ID", start_time AS "Start Time", end_time AS "End Time",
-                       reason_level_1 AS "Reason Level 1", reason_level_3 AS "Reason Level 3", final_cell_hr AS "Total Cell Hour"
-                FROM total_cell_down WHERE end_time::date >= :start_date AND end_time::date <= :end_date AND reason_level_3 = :reason ORDER BY end_time DESC
+                SELECT t.site_id AS "Site Code", t.alarm_name AS "Alarm Name/Cell ID", t.start_time AS "Start Time", t.end_time AS "End Time",
+                       t.reason_level_1 AS "Reason Level 1", t.reason_level_3 AS "Reason Level 3", t.final_cell_hr AS "Final Cell Hr",
+                       m.fot_teams AS "Team"
+                FROM total_cell_down t
+                LEFT JOIN site_master m ON t.site_id = m.site_id
+                WHERE t.end_time::date >= :start_date AND t.end_time::date <= :end_date AND t.reason_level_3 = :reason 
+                ORDER BY t.end_time DESC
             """
             export_df = conn.query(export_query, params={"start_date": start_date, "end_date": end_date, "reason": selected_reason}, ttl="1m")
         
         if not export_df.empty:
-            export_df["Total Cell Hour"] = pd.to_numeric(export_df["Total Cell Hour"], errors='coerce').fillna(0.0)
+            export_df["Final Cell Hr"] = pd.to_numeric(export_df["Final Cell Hr"], errors='coerce').fillna(0.0)
+            export_df["Start Time"] = pd.to_datetime(export_df["Start Time"])
+            export_df["End Time"] = pd.to_datetime(export_df["End Time"])
+
+            processed_rows = []
+            for _, row in export_df.iterrows():
+                start = row['Start Time']
+                end = row['End Time']
+                orig_hr = float(row['Final Cell Hr'])
+                
+                if pd.isna(start) or pd.isna(end) or start >= end:
+                    day_hr, night_hr, mid_hr = 0.0, 0.0, 0.0
+                else:
+                    if start.tzinfo is not None: start = start.tz_localize(None)
+                    if end.tzinfo is not None: end = end.tz_localize(None)
+                    
+                    total_orig_dur = (end - start).total_seconds() / 3600.0
+                    if total_orig_dur <= 0 or total_orig_dur > 1440:
+                        day_hr, night_hr, mid_hr = orig_hr, 0.0, 0.0
+                    else:
+                        d_acc, n_acc, m_acc = 0.0, 0.0, 0.0
+                        curr = start
+                        while curr < end:
+                            date_curr = curr.date()
+                            day_start = datetime.combine(date_curr, time(6, 0))
+                            day_end = datetime.combine(date_curr, time(18, 0))
+                            night_end = datetime.combine(date_curr, time(23, 0))
+                            
+                            if curr < day_start:
+                                bucket = "Midnight"
+                                b_end = day_start
+                            elif day_start <= curr < day_end:
+                                bucket = "Day"
+                                b_end = day_end
+                            elif day_end <= curr < night_end:
+                                bucket = "Night"
+                                b_end = night_end
+                            else:
+                                bucket = "Midnight"
+                                b_end = datetime.combine(date_curr + timedelta(days=1), time(6, 0))
+
+                            segment_end = min(end, b_end)
+                            duration_hrs = (segment_end - curr).total_seconds() / 3600.0
+
+                            if duration_hrs > 0:
+                                slice_hr = orig_hr * (duration_hrs / total_orig_dur)
+                                if bucket == "Day": d_acc += slice_hr
+                                elif bucket == "Night": n_acc += slice_hr
+                                elif bucket == "Midnight": m_acc += slice_hr
+                            curr = segment_end
+                        day_hr, night_hr, mid_hr = round(d_acc, 4), round(n_acc, 4), round(m_acc, 4)
+
+                processed_rows.append({
+                    "Site Code": row['Site Code'],
+                    "Alarm Name/Cell ID": row['Alarm Name/Cell ID'],
+                    "Team": row['Team'],
+                    "Start Time": start.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(start) else "",
+                    "End Time": end.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(end) else "",
+                    "Reason Level 1": row['Reason Level 1'],
+                    "Reason Level 3": row['Reason Level 3'],
+                    "Day": day_hr,
+                    "Night": night_hr,
+                    "Mid Night": mid_hr,
+                    "Final Cell hr": orig_hr
+                })
+
+            final_export_df = pd.DataFrame(processed_rows)
             
-            # --- FIX: Strip timezones so Excel doesn't crash ---
-            export_df["Start Time"] = pd.to_datetime(export_df["Start Time"]).dt.tz_localize(None)
-            export_df["End Time"] = pd.to_datetime(export_df["End Time"]).dt.tz_localize(None)
-            
-            st.success(f"📊 Found {len(export_df)} operational logs matching your criteria.")
-            st.dataframe(export_df, use_container_width=True)
+            st.success(f"📊 Found {len(final_export_df)} operational logs matching your criteria.")
+            st.dataframe(final_export_df, use_container_width=True)
             
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                export_df.to_excel(writer, sheet_name='Operational Report', index=False)
+                final_export_df.to_excel(writer, sheet_name='Operational Report', index=False)
             
             st.download_button(
-                label="📥 Download Excel Report", data=output.getvalue(),
-                file_name=f"network_down_report_{str(selected_reason).replace(' ', '_').lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                label="📥 Download Excel Report with Day/Night/Mid Night", data=output.getvalue(),
+                file_name=f"network_down_report_buckets_{str(selected_reason).replace(' ', '_').lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel_report_btn"
             )
         else:
             st.warning("⚠️ No operational records found for the chosen date range and criteria.")
 
 #=================================================================================================
-# ======================================================================================
 elif current_tab == "⚠️ Error Checking":
-    # Display persistent success message if it exists from a previous run
     if "override_success_msg" in st.session_state:
         st.success(st.session_state["override_success_msg"])
         del st.session_state["override_success_msg"]
@@ -975,7 +1187,6 @@ elif current_tab == "⚠️ Error Checking":
     if selected_cycle_err != "None":
         s_bound, e_bound = get_cycle_date_bounds(selected_cycle_err)
         
-        # Pull original values including current reason_level_3 to safely match records
         query = """
             SELECT t.site_id, t.alarm_name, t.start_time, t.end_time, t.reason_level_1, t.reason_level_3, t.final_cell_hr, m.owner, m.power_type 
             FROM total_cell_down t
@@ -1020,12 +1231,10 @@ elif current_tab == "⚠️ Error Checking":
                 power = str(row.get('power_type', '')).strip()
                 alarm = str(row.get('alarm_name', '')).lower()
                 
-                # Rule 1: If reason_level_3 is blank, null, 'nan', or 'unknown', classify as an OCE Error
                 is_r3_invalid = not row.get('reason_level_3') or r3 == "" or r3 == "nan" or r3 == "unknown"
                 if is_r3_invalid:
                     return "OCE Error"
 
-                # New OCE Error Rule: reason_level_1 is blank, alarm does NOT include NE is Disconnected or CSL Fault, and reason_level_3 is Mytel Power or Towerco Power
                 is_r1_blank = r1 == "" or r1 == "nan" or r1 == "none" or r1_raw.strip() == ""
                 is_excluded_alarm = "ne is disconnected" in alarm or "csl fault" in alarm
                 is_power_reason = r3 in ["mytel power", "towerco power issue", "towerco power"]
@@ -1033,11 +1242,9 @@ elif current_tab == "⚠️ Error Checking":
                 if is_r1_blank and not is_excluded_alarm and is_power_reason:
                     return "OCE Error"
 
-                # Rule 2: NOC Errors based on power and reason level 1 mismatches
                 if power == 'Self Power' and ('tco' in r1 or 'towerco' in r1): 
                     return "NOC Error"
                 
-                # Rule 3: OCE Errors if power conflicts with reason level 3 keywords
                 if power == 'Self Power' and ('tco' in r3 or 'tower' in r3): 
                     return "OCE Error"
                     
@@ -1059,9 +1266,6 @@ elif current_tab == "⚠️ Error Checking":
             if not oce_df.empty: st.dataframe(oce_df, use_container_width=True)
             else: st.success("No OCE errors found.")
 
-            # ==========================================================================
-            # --- IMPORTANT: OVERRIDE & FIX INCORRECT ERROR LOGS MODULE ---
-            # ==========================================================================
             st.markdown("---")
             st.markdown(
                 """
@@ -1086,7 +1290,6 @@ elif current_tab == "⚠️ Error Checking":
             with col_f3:
                 search_site_code = st.text_input("🏢 Search Site Code (optional):", "", key="override_site_search")
 
-            # Filter logic: Apply filters based on selections
             filtered_override_df = df.copy()
             
             if selected_override_date != "-- All Dates --":
@@ -1098,7 +1301,6 @@ elif current_tab == "⚠️ Error Checking":
             if search_site_code.strip():
                 filtered_override_df = filtered_override_df[filtered_override_df['site_id'].astype(str).str.contains(search_site_code.strip(), case=False, na=False)]
 
-            # Check if any filter or search has been applied to render the editor
             if selected_override_date != "-- All Dates --" or selected_override_reason != "-- All Reasons --" or search_site_code.strip():
                 if not filtered_override_df.empty:
                     filtered_override_df['original_reason_level_3'] = filtered_override_df['reason_level_3']
@@ -1213,7 +1415,6 @@ elif current_tab == "⚠️ Error Checking":
                 st.info("👆 Please select an **Operational Date**, a **Reason Level 3**, or type a **Site Code** in the search box above to load and edit records.")
         else:
             st.info("No data available for selected cycle.")
-#===========================================================
 
 elif current_tab == "🏆 Team Performance":
     st.markdown("<h1>🏆 Team Performance Dashboard</h1>", unsafe_allow_html=True)
@@ -1269,10 +1470,6 @@ elif current_tab == "🏆 Team Performance":
     else:
         st.warning("⚠️ Please select at least one cycle.")
 
-# ==================================================================================================
-# ==================================================================================================
-# ==================================================================================================
-# ==================================================================================================
 elif current_tab == "🌊 Flood & Disaster Tracking":
     st.markdown("<h1>🌊 Natural Disaster & Flood Tracking Command Center</h1>", unsafe_allow_html=True)
     st.markdown("<p style='color:#64748B;'>Complete monitoring, precise alarm calculation logic, trends, and still-down site highlighting.</p>", unsafe_allow_html=True)
@@ -1315,11 +1512,9 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
             s_bound = pd.to_datetime(flood_start_date)
             e_bound = pd.to_datetime(flood_end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             
-            # Generate expected date columns chronologically
             date_range_list = pd.date_range(start=flood_start_date, end=flood_end_date)
             expected_date_strs = [d.strftime('%b-%d') for d in date_range_list]
 
-            # --- Process Live Current Down File using Exact Logic & Deduplication ---
             live_down_records = []
             live_down_site_set = set()
             
@@ -1330,7 +1525,6 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
                     cd_df = cd_df.drop(0).reset_index(drop=True)
                     cd_df.columns = [str(c).strip() for c in cd_df.columns]
                     
-                    # --- REMOVE DUPLICATES ---
                     dedup_subset = [c for c in ['Station standard code', 'Cell name', 'Alarm name', 'Start time'] if c in cd_df.columns]
                     if dedup_subset:
                         cd_df = cd_df.drop_duplicates(subset=dedup_subset).copy()
@@ -1389,7 +1583,6 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
 
             live_down_detail_df = pd.DataFrame(live_down_records)
 
-            # --- Diagnostic Debug Expander ---
             with st.expander("🔍 DEBUG: View Processed Still-Down Records", expanded=False):
                 if not live_down_detail_df.empty:
                     st.write(f"Total matched still-down records: {len(live_down_detail_df)}")
@@ -1397,7 +1590,6 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
                 else:
                     st.warning("⚠️ No still-down records matched your site list IDs.")
 
-            # --- Pull Database Records ---
             placeholders = ", ".join([f":site_{i}" for i in range(len(all_target_sites))])
             params = {f"site_{i}": s for i, s in enumerate(all_target_sites)}
             params["start_bound"] = s_bound
@@ -1421,7 +1613,6 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
                 db_flood_df['site_id'] = db_flood_df['site_id'].astype(str).str.strip().str.upper()
                 db_flood_df['team'] = db_flood_df['team'].fillna('Unassigned').astype(str).str.strip()
 
-            # --- Status Calculation (Still Down vs Already Up) ---
             mon_down = [s for s in monitoring_sites if s in live_down_site_set]
             mon_up = [s for s in monitoring_sites if s not in live_down_site_set]
 
@@ -1475,7 +1666,6 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
                     
                     date_hrs = {d_str: 0.0 for d_str in expected_date_strs}
                     
-                    # 1. Historical DB logs
                     if not db_flood_df.empty:
                         sub_site = db_flood_df[db_flood_df['site_id'] == s_id]
                         for _, r_db in sub_site.iterrows():
@@ -1483,7 +1673,6 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
                             if d_str in date_hrs:
                                 date_hrs[d_str] += float(r_db['final_cell_hr'] or 0.0)
 
-                    # 2. Live Still Down records (Accumulate using += on exact start date)
                     if s_id in live_down_site_set and not live_down_detail_df.empty:
                         live_sub = live_down_detail_df[live_down_detail_df['site_id'] == s_id]
                         for _, r_live in live_sub.iterrows():
@@ -1503,13 +1692,11 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
                     down_days = sum(1 for d_str, hr in date_hrs.items() if hr > 0.0)
                     avg_hr = float(total_hr / days_passed)
 
-                    # Assign key summary metrics first
                     row_dict['Total Cell Hr'] = float(total_hr)
                     row_dict['Total Time Down'] = int(down_days)
                     row_dict['Average Cell Hr'] = float(avg_hr)
-                    row_dict['%'] = 0.0  # Placeholder, calculated below
+                    row_dict['%'] = 0.0
 
-                    # Append chronological daily date columns after metrics
                     row_dict.update(date_hrs)
                     rows_data.append(row_dict)
 
@@ -1519,12 +1706,10 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
                 grand_sum = summary_df['Total Cell Hr'].sum()
                 summary_df['%'] = (summary_df['Total Cell Hr'] / grand_sum * 100) if grand_sum > 0 else 0.0
 
-                # Ensure exact column order: Site ID, Team, Total Cell Hr, Total Time Down, Average Cell Hr, %, [Date columns...]
                 fixed_cols = ['Site ID', 'Team', 'Total Cell Hr', 'Total Time Down', 'Average Cell Hr', '%']
                 final_col_order = fixed_cols + expected_date_strs
                 summary_df = summary_df[final_col_order]
 
-                # Styling function to highlight still-down sites in soft red/coral
                 def highlight_still_down(row):
                     is_down = row['Site ID'] in live_down_site_set
                     return ['background-color: #FFCDD2; color: #B71C1C; font-weight: bold;' if is_down else '' for _ in row]
@@ -1543,7 +1728,6 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
                     hide_index=True
                 )
 
-                # Export Report Button
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine='openpyxl') as writer:
                     summary_df.to_excel(writer, sheet_name=f'{label_name} Summary', index=False)
@@ -1558,7 +1742,6 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
 
                 return summary_df
 
-            # --- Generate Summaries ---
             flooded_summary_df = pd.DataFrame()
             if flooded_sites:
                 flooded_summary_df = generate_full_coverage_summary(flooded_sites, "Flooded Sites")
@@ -1566,7 +1749,6 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
             if monitoring_sites:
                 generate_full_coverage_summary(monitoring_sites, "Monitoring Sites")
 
-            # --- Chronological Trend Chart for Flooded Sites ---
             if not flooded_summary_df.empty:
                 st.divider()
                 st.subheader("📈 Cell Hour Trend for Flooded Sites")
