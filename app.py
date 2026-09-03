@@ -592,60 +592,68 @@ elif current_tab == "📈 Analytics & Trends":
             df = get_analytics_data_for_cycles(selected_cycles)
 
             if not df.empty:
-                st.write("### 🌐 Overall Total Cell Hour Trend")
-                grouped = df.groupby(['plot_day', 'cycle_name'])['final_cell_hr'].sum().reset_index()
+                st.write(f"### 📅 Cycle Performance Summary & Filters (21st - 20th)")
+                col_f1, col_f2 = st.columns(2)
+                with col_f1:
+                    selected_summary_cycles = st.multiselect("Select Cycle Period(s) for Summary & Trend:", options=selected_cycles, default=selected_cycles[:1] if selected_cycles else None, key="summary_cycle_multiselect")
                 
-                fig = px.line(grouped, x='plot_day', y='final_cell_hr', color='cycle_name', markers=True, color_discrete_sequence=px.colors.qualitative.Alphabet)
-                fig.update_traces(mode='lines+markers+text', texttemplate='%{y:.0f}', textposition='top center', textfont=dict(weight="bold", size=11, color="black"))
-                fig.add_hline(y=target_val, line_dash="dash", line_color="red", annotation_text=f"Target: {target_val}")
-                cycle_labels = [str(i) for i in range(21, 32)] + [str(i) for i in range(1, 21)]
-                fig.update_layout(xaxis=dict(title="Cycle Date (21st to 20th)", tickmode='array', tickvals=list(range(1, 32)), ticktext=cycle_labels, tickfont=dict(size=10, color="black")), yaxis_title="Total Cell Hour", legend_title="Cycle Period", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                st.plotly_chart(fig, use_container_width=True)
+                curr_df = df[df['cycle_name'].isin(selected_summary_cycles)].copy() if selected_summary_cycles else pd.DataFrame()
+                
+                all_available_reasons = sorted(curr_df['reason_level_3'].dropna().unique().tolist()) if not curr_df.empty else sorted(df['reason_level_3'].dropna().unique().tolist())
+                
+                with col_f2:
+                    selected_reasons_cycle = st.multiselect(
+                        "🔍 Filter / Hide Reason Categories:",
+                        options=all_available_reasons,
+                        default=all_available_reasons,
+                        key="cycle_summary_reason_filter"
+                    )
 
-                st.write(f"### 📅 Cycle Performance Summary (21st - 20th)")
-                selected_summary_cycles = st.multiselect("Select Cycle Period(s) for Summary:", options=selected_cycles, default=selected_cycles[0] if selected_cycles else None, key="summary_cycle_multiselect")
+                if selected_reasons_cycle and not curr_df.empty:
+                    curr_df = curr_df[curr_df['reason_level_3'].isin(selected_reasons_cycle)]
 
-                if selected_summary_cycles:
-                    curr_df = df[df['cycle_name'].isin(selected_summary_cycles)].copy()
-                    if not curr_df.empty:
-                        all_available_reasons = sorted(curr_df['reason_level_3'].dropna().unique().tolist())
-                        selected_reasons_cycle = st.multiselect(
-                            "🔍 Filter / Hide Reason Categories (Cycle Summary):",
-                            options=all_available_reasons,
-                            default=all_available_reasons,
-                            key="cycle_summary_reason_filter"
-                        )
-                        
-                        if selected_reasons_cycle:
-                            curr_df = curr_df[curr_df['reason_level_3'].isin(selected_reasons_cycle)]
+                st.write("### 🌐 Overall Total Cell Hour Trend")
+                if not curr_df.empty:
+                    grouped = curr_df.groupby(['plot_day', 'cycle_name'])['final_cell_hr'].sum().reset_index()
+                    
+                    fig = px.line(grouped, x='plot_day', y='final_cell_hr', color='cycle_name', markers=True, color_discrete_sequence=px.colors.qualitative.Alphabet)
+                    fig.update_traces(mode='lines+markers+text', texttemplate='%{y:.0f}', textposition='top center', textfont=dict(weight="bold", size=11, color="black"))
+                    fig.add_hline(y=target_val, line_dash="dash", line_color="red", annotation_text=f"Target: {target_val}")
+                    cycle_labels = [str(i) for i in range(21, 32)] + [str(i) for i in range(1, 21)]
+                    fig.update_layout(xaxis=dict(title="Cycle Date (21st to 20th)", tickmode='array', tickvals=list(range(1, 32)), ticktext=cycle_labels, tickfont=dict(size=10, color="black")), yaxis_title="Total Cell Hour", legend_title="Cycle Period", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Please select cycle periods and reason categories to display the trend chart.")
 
-                        date_mapping = {}
-                        for _, r in curr_df[['plot_day', 'dt_obj']].drop_duplicates().iterrows():
-                            if pd.notna(r['dt_obj']): date_mapping[r['plot_day']] = r['dt_obj'].strftime('%b-%d')
+                st.write(f"### 📅 Cycle Performance Summary Table")
+                if not curr_df.empty:
+                    date_mapping = {}
+                    for _, r in curr_df[['plot_day', 'dt_obj']].drop_duplicates().iterrows():
+                        if pd.notna(r['dt_obj']): date_mapping[r['plot_day']] = r['dt_obj'].strftime('%b-%d')
 
-                        pivot_df = curr_df.pivot_table(index='reason_level_3', columns='plot_day', values='final_cell_hr', aggfunc='sum', fill_value=0)
-                        pivot_df = pivot_df.reindex(sorted(pivot_df.columns), axis=1).rename(columns=date_mapping)
-                        pivot_df['Total Cell Hour'] = pivot_df.sum(axis=1)
-                        pivot_df['Daily Avg Cell hour'] = pivot_df['Total Cell Hour'] / max(curr_df['dt_obj'].nunique(), 1)
-                        total_sum = pivot_df['Daily Avg Cell hour'].sum()
-                        pivot_df['Daily Avg (%)'] = (pivot_df['Daily Avg Cell hour'] / total_sum) * 100 if total_sum > 0 else 0
-                        pivot_df = pivot_df.reset_index().rename(columns={'reason_level_3': 'Reason'})
+                    pivot_df = curr_df.pivot_table(index='reason_level_3', columns='plot_day', values='final_cell_hr', aggfunc='sum', fill_value=0)
+                    pivot_df = pivot_df.reindex(sorted(pivot_df.columns), axis=1).rename(columns=date_mapping)
+                    pivot_df['Total Cell Hour'] = pivot_df.sum(axis=1)
+                    pivot_df['Daily Avg Cell hour'] = pivot_df['Total Cell Hour'] / max(curr_df['dt_obj'].nunique(), 1)
+                    total_sum = pivot_df['Daily Avg Cell hour'].sum()
+                    pivot_df['Daily Avg (%)'] = (pivot_df['Daily Avg Cell hour'] / total_sum) * 100 if total_sum > 0 else 0
+                    pivot_df = pivot_df.reset_index().rename(columns={'reason_level_3': 'Reason'})
 
-                        m1, m2 = st.columns(2)
-                        m1.metric("Total Cell Hour", f"{float(pivot_df['Total Cell Hour'].sum()):,.2f}")
-                        m2.metric("Daily Avg Cell hour", f"{float(pivot_df['Daily Avg Cell hour'].sum()):,.2f}")
-                        
-                        summary_fixed_cols = ['Reason', 'Total Cell Hour', 'Daily Avg Cell hour', 'Daily Avg (%)']
-                        date_cols = [c for c in pivot_df.columns if c not in summary_fixed_cols]
-                        column_config = {
-                            "Reason": st.column_config.TextColumn("Reason", width="medium", pinned=True),
-                            "Total Cell Hour": st.column_config.NumberColumn("Total Cell Hour", format="%.1f", width="small", pinned=True),
-                            "Daily Avg Cell hour": st.column_config.NumberColumn("Daily Avg Cell Hour", format="%.1f", width="small", pinned=True),
-                            "Daily Avg (%)": st.column_config.ProgressColumn("Daily Avg (%)", format="%.1f%%", min_value=0, max_value=100, width="small", pinned=True),
-                        }
-                        for d_col in date_cols: column_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small")
+                    m1, m2 = st.columns(2)
+                    m1.metric("Total Cell Hour", f"{float(pivot_df['Total Cell Hour'].sum()):,.2f}")
+                    m2.metric("Daily Avg Cell hour", f"{float(pivot_df['Daily Avg Cell hour'].sum()):,.2f}")
+                    
+                    summary_fixed_cols = ['Reason', 'Total Cell Hour', 'Daily Avg Cell hour', 'Daily Avg (%)']
+                    date_cols = [c for c in pivot_df.columns if c not in summary_fixed_cols]
+                    column_config = {
+                        "Reason": st.column_config.TextColumn("Reason", width="medium", pinned=True),
+                        "Total Cell Hour": st.column_config.NumberColumn("Total Cell Hour", format="%.1f", width="small", pinned=True),
+                        "Daily Avg Cell hour": st.column_config.NumberColumn("Daily Avg Cell Hour", format="%.1f", width="small", pinned=True),
+                        "Daily Avg (%)": st.column_config.ProgressColumn("Daily Avg (%)", format="%.1f%%", min_value=0, max_value=100, width="small", pinned=True),
+                    }
+                    for d_col in date_cols: column_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small")
 
-                        st.dataframe(pivot_df, use_container_width=True, hide_index=True, column_order=summary_fixed_cols + date_cols, column_config=column_config)
+                    st.dataframe(pivot_df, use_container_width=True, hide_index=True, column_order=summary_fixed_cols + date_cols, column_config=column_config)
 
                 st.divider()
 
