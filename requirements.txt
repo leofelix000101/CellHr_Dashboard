@@ -1,7 +1,7 @@
 streamlit
 pandas
-numpy
+psycopg2-binary
 plotly
+python-dateutil
 openpyxl
-psycopg[binary]
 sqlalchemy
