@@ -1,6 +1,7 @@
 from sqlalchemy import text
 import streamlit as st
 import pandas as pd
+import psycopg2
 import plotly.express as px
 from datetime import datetime, timedelta, time
 from dateutil.relativedelta import relativedelta
@@ -14,12 +15,12 @@ st.set_page_config(
     page_icon="📡"
 )
 
-# --- App Styling Tweaks (Fonts & Hierarchy) ---
+# --- App Styling Tweaks (Fonts, Hierarchy & Light/Dark Mode Adaptability) ---
 st.markdown("""
 <style>
     .reportview-container .main .block-container { padding-top: 2rem; }
-    h1, h2, h3 { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-weight: 600; color: #1E293B; }
-    div[data-testid="stMetricValue"] { font-size: 2rem !important; font-weight: 700; color: #0EA5E9; }
+    h1, h2, h3 { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-weight: 600; }
+    div[data-testid="stMetricValue"] { font-size: 2rem !important; font-weight: 700; }
     
     /* Table Appearance Tweaks */
     div[data-testid="stDataFrame"] td, div[data-testid="stDataEditor"] td {
@@ -54,8 +55,8 @@ def check_password():
         st.markdown("<br><br><br>", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown(
-                "<h2 style='text-align: center; margin-bottom: 5px; color:#0F172A;'>📡 CELL HOUR ANALYSIS</h2>"
-                "<p style='text-align: center; color:#64748B; margin-bottom: 25px;'>Sign in to manage monitoring and cell logs</p>", 
+                "<h2 style='text-align: center; margin-bottom: 5px;'>📡 CELL HOUR ANALYSIS</h2>"
+                "<p style='text-align: center; opacity: 0.7; margin-bottom: 25px;'>Sign in to manage monitoring and cell logs</p>", 
                 unsafe_allow_html=True
             )
             user = st.text_input("Username", placeholder="Enter your operator username")
@@ -105,8 +106,8 @@ else:
 # --- Modern Sidebar Implementation & Developer Info ---
 with st.sidebar:
     st.markdown(
-        "<h2 style='margin-bottom: 0px; color:#0F172A;'>Ops Control Room</h2>"
-        "<p style='color:#64748B; font-size:0.85rem; margin-bottom: 20px;'>OCE CELL HOUR CALCULATION</p>", 
+        "<h2 style='margin-bottom: 0px;'>Ops Control Room</h2>"
+        "<p style='opacity: 0.7; font-size:0.85rem; margin-bottom: 20px;'>OCE CELL HOUR CALCULATION</p>", 
         unsafe_allow_html=True
     )
     
@@ -120,10 +121,10 @@ with st.sidebar:
     st.divider()
     
     developer_html = (
-        f"<h4 style='color:#475569; margin-bottom: 5px;'>🔧 User Profile</h4>"
-        f"<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>Role:</strong> {role_display_name}</p>"
-        "<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>System:</strong> Streamlit / Supabase</p>"
-        "<p style='margin:0; font-size:0.85rem; color:#64748B;'><strong>Status:</strong> Active Session ✅</p>"
+        f"<h4 style='margin-bottom: 5px;'>🔧 User Profile</h4>"
+        f"<p style='margin:0; font-size:0.85rem;'><strong>Role:</strong> {role_display_name}</p>"
+        "<p style='margin:0; font-size:0.85rem;'><strong>System:</strong> Streamlit / Supabase</p>"
+        "<p style='margin:0; font-size:0.85rem;'><strong>Status:</strong> Active Session ✅</p>"
     )
     st.markdown(developer_html, unsafe_allow_html=True)
     
@@ -305,7 +306,7 @@ def get_tracking_data_for_cycle(selected_cycle):
     conn_cache = st.connection("postgresql", type="sql", pool_pre_ping=True, pool_recycle=300)
     
     query = """
-        SELECT t.end_time, t.site_id, t.final_cell_hr, t.reason_level_3, m.fot_teams AS team, m.owner 
+        SELECT t.start_time, t.end_time, t.site_id, t.final_cell_hr, t.reason_level_3, m.fot_teams AS team, m.owner 
         FROM total_cell_down t 
         LEFT JOIN site_master m ON t.site_id = m.site_id
         WHERE t.end_time >= :start_bound AND t.end_time <= :end_bound
@@ -314,6 +315,7 @@ def get_tracking_data_for_cycle(selected_cycle):
     
     if not df.empty:
         df['final_cell_hr'] = pd.to_numeric(df['final_cell_hr'], errors='coerce').fillna(0.0)
+        df['start_time'] = pd.to_datetime(df['start_time'])
         df['end_time'] = pd.to_datetime(df['end_time'])
         df['owner'] = df['owner'].fillna('Unknown Owner').astype(str).str.strip()
     return df
@@ -321,7 +323,7 @@ def get_tracking_data_for_cycle(selected_cycle):
 # ======================================================================================
 if current_tab == "📂 Upload & Process":
     st.markdown("<h1 style='margin-bottom:0px;'>📂 Upload & Validation Pipeline</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='color:#64748B;'>Import daily NOC pro cell down file!</p>", unsafe_allow_html=True)
+    st.markdown("<p style='opacity: 0.7;'>Import daily NOC pro cell down file!</p>", unsafe_allow_html=True)
     st.divider()
     
     uploaded_file = st.file_uploader("Upload CSV/XLSX File", type=["csv", "xlsx"])
@@ -575,21 +577,33 @@ elif current_tab == "📈 Analytics & Trends":
     st.divider()
     
     available_cycles = get_available_cycles()
+    
+    target_val = st.number_input("🎯 Enter Target Cell Hour (Overall):", value=3000, step=100, key="overall_target_input")
+    
+    selected_cycles = st.multiselect(
+        "Select Cycle Periods to display:", 
+        options=available_cycles, 
+        default=available_cycles[:3] if len(available_cycles) >= 3 else available_cycles, 
+        key="overall_cycle_multiselect"
+    )
+
+    df = get_analytics_data_for_cycles(selected_cycles)
+
+    all_available_reasons = sorted(df['reason_level_3'].dropna().unique().tolist()) if not df.empty else []
+
+    st.markdown("### 🔍 Global Filter / Hide Reason Categories")
+    selected_reasons = st.multiselect(
+        "Select Reason Categories to include across both tabs:",
+        options=all_available_reasons,
+        default=all_available_reasons,
+        key="shared_reason_category_filter"
+    )
+
+    st.divider()
     trend_tab, time_bucket_tab = st.tabs(["🌐 Overall Trends & Daily Summary", "🌙 Day / Night / Midnight Analysis"])
 
     with trend_tab:
         with st.container(): 
-            target_val = st.number_input("🎯 Enter Target Cell Hour (Overall):", value=3000, step=100, key="overall_target_input")
-            
-            selected_cycles = st.multiselect(
-                "Select Cycle Periods to display:", 
-                options=available_cycles, 
-                default=available_cycles[:3] if len(available_cycles) >= 3 else available_cycles, 
-                key="overall_cycle_multiselect"
-            )
-
-            df = get_analytics_data_for_cycles(selected_cycles)
-
             if not df.empty:
                 st.write(f"### 📅 Cycle Performance Summary & Filters (21st - 20th)")
                 col_f1, col_f2 = st.columns(2)
@@ -597,29 +611,19 @@ elif current_tab == "📈 Analytics & Trends":
                     selected_summary_cycles = st.multiselect("Select Cycle Period(s) for Summary & Trend:", options=selected_cycles, default=selected_cycles[:1] if selected_cycles else None, key="summary_cycle_multiselect")
                 
                 curr_df = df[df['cycle_name'].isin(selected_summary_cycles)].copy() if selected_summary_cycles else pd.DataFrame()
-                
-                all_available_reasons = sorted(curr_df['reason_level_3'].dropna().unique().tolist()) if not curr_df.empty else sorted(df['reason_level_3'].dropna().unique().tolist())
-                
-                with col_f2:
-                    selected_reasons_cycle = st.multiselect(
-                        "🔍 Filter / Hide Reason Categories:",
-                        options=all_available_reasons,
-                        default=all_available_reasons,
-                        key="cycle_summary_reason_filter"
-                    )
 
-                if selected_reasons_cycle and not curr_df.empty:
-                    curr_df = curr_df[curr_df['reason_level_3'].isin(selected_reasons_cycle)]
+                if selected_reasons and not curr_df.empty:
+                    curr_df = curr_df[curr_df['reason_level_3'].isin(selected_reasons)]
 
                 st.write("### 🌐 Overall Total Cell Hour Trend")
                 if not curr_df.empty:
                     grouped = curr_df.groupby(['plot_day', 'cycle_name'])['final_cell_hr'].sum().reset_index()
                     
                     fig = px.line(grouped, x='plot_day', y='final_cell_hr', color='cycle_name', markers=True, color_discrete_sequence=px.colors.qualitative.Alphabet)
-                    fig.update_traces(mode='lines+markers+text', texttemplate='%{y:.0f}', textposition='top center', textfont=dict(weight="bold", size=11, color="black"))
+                    fig.update_traces(mode='lines+markers+text', texttemplate='%{y:.0f}', textposition='top center', textfont=dict(weight="bold", size=11))
                     fig.add_hline(y=target_val, line_dash="dash", line_color="red", annotation_text=f"Target: {target_val}")
                     cycle_labels = [str(i) for i in range(21, 32)] + [str(i) for i in range(1, 21)]
-                    fig.update_layout(xaxis=dict(title="Cycle Date (21st to 20th)", tickmode='array', tickvals=list(range(1, 32)), ticktext=cycle_labels, tickfont=dict(size=10, color="black")), yaxis_title="Total Cell Hour", legend_title="Cycle Period", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                    fig.update_layout(xaxis=dict(title="Cycle Date (21st to 20th)", tickmode='array', tickvals=list(range(1, 32)), ticktext=cycle_labels, tickfont=dict(size=10)), yaxis_title="Total Cell Hour", legend_title="Cycle Period", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("Please select cycle periods and reason categories to display the trend chart.")
@@ -661,18 +665,10 @@ elif current_tab == "📈 Analytics & Trends":
                 default_date = max_available_date if pd.notna(max_available_date) else datetime.now().date()
                 selected_summary_date = st.date_input("Select Operational Date:", value=default_date, key="daily_summary_date_picker")
                 
-                all_daily_reasons_global = sorted(df['reason_level_3'].dropna().unique().tolist())
-                selected_daily_reasons = st.multiselect(
-                    "🔍 Filter / Hide Reason Categories (Daily Summary):",
-                    options=all_daily_reasons_global,
-                    default=all_daily_reasons_global,
-                    key="daily_summary_reason_filter"
-                )
-
                 target_date_df = df[pd.to_datetime(df['end_time']).dt.date == selected_summary_date].copy()
                 
-                if selected_daily_reasons and not target_date_df.empty:
-                    target_date_df = target_date_df[target_date_df['reason_level_3'].isin(selected_daily_reasons)]
+                if selected_reasons and not target_date_df.empty:
+                    target_date_df = target_date_df[target_date_df['reason_level_3'].isin(selected_reasons)]
 
                 target_noc_df, target_oce_df = pd.DataFrame(), pd.DataFrame()
                 if not df.empty:                
@@ -742,14 +738,17 @@ elif current_tab == "📈 Analytics & Trends":
 
             full_splits_df = get_time_buckets_for_cycles(selected_tb_cycles)
 
+            if not full_splits_df.empty and selected_reasons:
+                full_splits_df = full_splits_df[full_splits_df['Reason level 3'].isin(selected_reasons)]
+
             if not full_splits_df.empty:
                 st.write("### 📊 Day, Night & Midnight Trend Lines")
                 trend_grouped = full_splits_df.groupby(['plot_day', 'Bucket', 'cycle_name'])['Total Cell Hour'].sum().reset_index()
 
                 fig_tb = px.line(trend_grouped, x='plot_day', y='Total Cell Hour', color='Bucket', line_dash='cycle_name', markers=True, color_discrete_sequence=["#2563EB", "#D97706", "#7C3AED"])
-                fig_tb.update_traces(mode='lines+markers+text', texttemplate='%{y:.0f}', textposition='top center', textfont=dict(weight="bold", size=10, color="black"))
+                fig_tb.update_traces(mode='lines+markers+text', texttemplate='%{y:.0f}', textposition='top center', textfont=dict(weight="bold", size=10))
                 cycle_labels = [str(i) for i in range(21, 32)] + [str(i) for i in range(1, 21)]
-                fig_tb.update_layout(xaxis=dict(title="Cycle Date (21st to 20th)", tickmode='array', tickvals=list(range(1, 32)), ticktext=cycle_labels, tickfont=dict(size=10, color="black")), yaxis_title="Total Cell Hour", legend_title="Time Bucket / Cycle", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                fig_tb.update_layout(xaxis=dict(title="Cycle Date (21st to 20th)", tickmode='array', tickvals=list(range(1, 32)), ticktext=cycle_labels, tickfont=dict(size=10)), yaxis_title="Total Cell Hour", legend_title="Time Bucket / Cycle", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                 st.plotly_chart(fig_tb, use_container_width=True)
                 st.divider()
 
@@ -771,7 +770,7 @@ elif current_tab == "📈 Analytics & Trends":
                             )
                     st.write("---")
             else:
-                st.info("No records available for selected cycle period(s).")
+                st.info("No records available for selected cycle period(s) or filtered categories.")
 
 #=================================================================================================
 elif current_tab == "🔬 Site Daily Down Tracking":
@@ -793,7 +792,7 @@ elif current_tab == "🔬 Site Daily Down Tracking":
             unique_dates_sorted = tracking_data.sort_values(by='end_time')['Date_Str'].unique()
             all_reasons = sorted(tracking_data['reason_level_3'].dropna().unique())
             
-            # --- GLOBAL SITE SEARCH FUNCTION (WITH MULTI-DATE MULTI-BUCKET + TOTAL COLUMNS) ---
+            # --- GLOBAL SITE SEARCH FUNCTION ---
             st.markdown("### 🔍 Global Site Search")
             search_query = st.text_input("Search site across all reason groups (enter Site ID):", "", key="global_site_search_input")
             
@@ -895,6 +894,110 @@ elif current_tab == "🔬 Site Daily Down Tracking":
                         }
                         for d_col in unique_dates_sorted: col_config[d_col] = st.column_config.NumberColumn(d_col, format="%.1f", width="small", alignment="center")
                         st.data_editor(search_pivot_reset, use_container_width=True, hide_index=True, disabled=True, column_order=pinned_cols + list(unique_dates_sorted), column_config=col_config)
+
+                    # --- MODERN TEXT / CARD DRILL-DOWN DETAILS WITH INDIVIDUAL EXPANDERS ---
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.markdown("### 📋 Detailed Event Breakdown by Reason")
+                    
+                    matched_reasons = searched_df['reason_level_3'].dropna().unique()
+                    tb_full = get_time_buckets_for_cycles([selected_cycle_name])
+
+                    for r_name in matched_reasons:
+                        r_subset = searched_df[searched_df['reason_level_3'] == r_name].copy()
+                        
+                        # Deduplicate identical start/end entries to prevent duplicate duration sum
+                        r_subset = r_subset.drop_duplicates(subset=['site_id', 'start_time', 'end_time', 'reason_level_3']).copy()
+                        r_subset['log_date'] = r_subset['end_time'].dt.date
+                        
+                        # Times: count distinct dates down to match summary table 'Times down' exactly
+                        reason_times_down = r_subset['log_date'].nunique()
+
+                        tot_day_dur, tot_night_dur, tot_mid_dur = 0.0, 0.0, 0.0
+                        event_rows_data = []
+
+                        for _, log_row in r_subset.sort_values(by='end_time', ascending=False).iterrows():
+                            s_code = log_row['site_id']
+                            st_time = log_row['start_time']
+                            en_time = log_row['end_time']
+                            total_hr = log_row['final_cell_hr']
+
+                            if pd.isna(st_time) or pd.isna(en_time) or st_time >= en_time:
+                                continue
+
+                            curr = st_time
+                            if curr.tzinfo is not None: curr = curr.tz_localize(None)
+                            if en_time.tzinfo is not None: en_time = en_time.tz_localize(None)
+
+                            active_bucket_durations = {}
+                            while curr < en_time:
+                                date_curr = curr.date()
+                                day_start = datetime.combine(date_curr, time(6, 0))
+                                day_end = datetime.combine(date_curr, time(18, 0))
+                                night_end = datetime.combine(date_curr, time(23, 0))
+                                next_day_start = datetime.combine(date_curr + timedelta(days=1), time(6, 0))
+
+                                if curr < day_start:
+                                    bucket = "Midnight"
+                                    b_end = day_start
+                                elif day_start <= curr < day_end:
+                                    bucket = "Day"
+                                    b_end = day_end
+                                elif day_end <= curr < night_end:
+                                    bucket = "Night"
+                                    b_end = night_end
+                                else:
+                                    bucket = "Midnight"
+                                    b_end = next_day_start
+
+                                segment_end = min(en_time, b_end)
+                                dur_hrs = (segment_end - curr).total_seconds() / 3600.0
+
+                                if dur_hrs > 0:
+                                    active_bucket_durations[bucket] = active_bucket_durations.get(bucket, 0.0) + dur_hrs
+                                curr = segment_end
+
+                            d_dur = active_bucket_durations.get("Day", 0.0)
+                            n_dur = active_bucket_durations.get("Night", 0.0)
+                            m_dur = active_bucket_durations.get("Midnight", 0.0)
+
+                            tot_day_dur += d_dur
+                            tot_night_dur += n_dur
+                            tot_mid_dur += m_dur
+
+                            dur_str_parts = []
+                            if d_dur > 0: dur_str_parts.append(f"Day : ({d_dur:.1f} hr)")
+                            if n_dur > 0: dur_str_parts.append(f"night : ({n_dur:.1f} hr)")
+                            if m_dur > 0: dur_str_parts.append(f"Mid_Night : ({m_dur:.1f} hr)")
+                            
+                            dur_summary_str = " | ".join(dur_str_parts) if dur_str_parts else "None : (0.0 hr)"
+
+                            event_rows_data.append({
+                                "s_code": s_code,
+                                "st_str": st_time.strftime('%Y-%m-%d %H:%M'),
+                                "en_str": en_time.strftime('%Y-%m-%d %H:%M'),
+                                "total_hr": total_hr,
+                                "dur_summary_str": dur_summary_str
+                            })
+
+                        # Individual hide and show expander for each reason
+                        with st.expander(f"📂 {r_name} (Hide / Show)", expanded=True):
+                            with st.container(border=True):
+                                st.markdown(f"#### **{r_name}**", unsafe_allow_html=True)
+                                
+                                f_col1, f_col2, f_col3 = st.columns(3)
+                                f_col1.metric("Total Day Duration Hr", f"{tot_day_dur:.1f} hr")
+                                f_col2.metric("Total Night Duration Hr", f"{tot_night_dur:.1f} hr")
+                                f_col3.metric("Total Midnight Duration Hr", f"{tot_mid_dur:.1f} hr")
+                                st.divider()
+
+                                for ev in event_rows_data:
+                                    card_text = (
+                                        f"📍 **{ev['s_code']}** &nbsp;|&nbsp; "
+                                        f"⏳ **Start:** {ev['st_str']} &nbsp;➔&nbsp; **End:** {ev['en_str']} &nbsp;|&nbsp; "
+                                        f"📊 **Total Cell Hr:** {ev['total_hr']:.2f} &nbsp;|&nbsp; "
+                                        f"🕒 **Duration:** {ev['dur_summary_str']}"
+                                    )
+                                    st.markdown(f"> {card_text}")
                 else:
                     st.info("No matching sites found across reason groups.")
                 st.divider()
@@ -1185,7 +1288,7 @@ elif current_tab == "⚠️ Error Checking":
         del st.session_state["override_success_msg"]
 
     st.markdown("<h1>⚠️ Data Integrity & Error Checking</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='color:#64748B;'>Audit configuration logs, identify NOC/OCE errors, and manually override incorrect or unknown Reason Level 3 entries.</p>", unsafe_allow_html=True)
+    st.markdown("<p style='opacity: 0.7;'>Audit configuration logs, identify NOC/OCE errors, and manually override incorrect or unknown Reason Level 3 entries.</p>", unsafe_allow_html=True)
     st.divider()
 
     available_cycles = get_available_cycles()
@@ -1479,7 +1582,7 @@ elif current_tab == "🏆 Team Performance":
 
 elif current_tab == "🌊 Flood & Disaster Tracking":
     st.markdown("<h1>🌊 Natural Disaster & Flood Tracking Command Center</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='color:#64748B;'>Complete monitoring, precise alarm calculation logic, trends, and still-down site highlighting.</p>", unsafe_allow_html=True)
+    st.markdown("<p style='opacity: 0.7;'>Complete monitoring, precise alarm calculation logic, trends, and still-down site highlighting.</p>", unsafe_allow_html=True)
     st.divider()
 
     col_u1, col_u2 = st.columns(2)
@@ -1784,14 +1887,4 @@ elif current_tab == "🌊 Flood & Disaster Tracking":
                 )
                 
                 max_val = trend_grouped['Cell_Hour'].max() if not trend_grouped.empty else 100
-                fig_flood_trend.update_layout(
-                    xaxis_title="Date", 
-                    yaxis_title="Total Cell Hour", 
-                    yaxis=dict(range=[0, max_val * 1.25]), 
-                    template="plotly_white"
-                )
-                
-                st.plotly_chart(fig_flood_trend, use_container_width=True)
-
-    else:
-        st.warning("⚠️ Please **upload your Site Lists file** and select your **Flood Period Date Range** above.")
+                fig_flood
