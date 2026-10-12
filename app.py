@@ -37,10 +37,9 @@ st.markdown("""
 conn = st.connection(
     "postgresql", 
     type="sql", 
-    url="postgresql+psycopg2://", # Force psycopg2 dialect
     pool_pre_ping=True, 
     pool_recycle=300
-)
+) 
 
 # --- Professional Secure Login Screen (with Role-Based Tracking) ---
 def check_password():
