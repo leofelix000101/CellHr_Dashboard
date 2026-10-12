@@ -1,6 +1,7 @@
 streamlit
 pandas
 psycopg2-binary
+psycopg
 plotly
 python-dateutil
 openpyxl
